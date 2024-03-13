@@ -36,7 +36,7 @@ def main(args):
     tokenizer = stanza.Pipeline(lang=args.language, processors='tokenize', verbose=False, device=args.device)
     tokenizer.processors['tokenize'].config['max_seqlen'] = 10_000
 
-    lines = normalizer.normalize(lines)
+    lines = [normalizer.normalize(line) for line in lines]
 
     sentences = []
     for i in tqdm(range(0, n, args.batch_size), total=n//args.batch_size, desc='Splitting texts into sentences'):
@@ -52,12 +52,13 @@ def main(args):
 if __name__ == '__main__':
     import argparse
 
+    str_or_none = lambda x: x if x is None else str(x)
     parser = argparse.ArgumentParser(description='Tokenize text with stanza')
     parser.add_argument('--input_file', type=str, help='Path of input file')
     parser.add_argument('--language', type=str, help='Language code')
     parser.add_argument('--output_file', type=str, help='Path of output file')
     parser.add_argument('--overwrite', action='store_true', help='Overwrite output file')
-    parser.add_argument('--device', type=str, default=None, help='Device to use', choices=['cpu', 'cuda', 'mps'])
+    parser.add_argument('--device', type=str_or_none, default=None, help='Device to use', choices=['cpu', 'cuda', 'mps'])
     parser.add_argument('--batch_size', type=int, default=512, help='Batch size')
     parser.add_argument('--test', action='store_true', help='Run test')
     parser.add_argument('--n_test', type=int, default=10, help='Run test')
