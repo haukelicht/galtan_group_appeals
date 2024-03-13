@@ -6,6 +6,7 @@ group_appeals_galtan_parties.Rproj
 .Rsession
 .Renviron
 .env
+.vscode/
 
 .DS_Store
 */**/.DS_Store

@@ -9,7 +9,7 @@
 #SBATCH --output=%x.log
 #SBATCH --error=%x.err
 
-# module load gcc/8.2.0 eth_proxy python_gpu/3.11.2
+module load gcc/8.2.0 eth_proxy python_gpu/3.11.2
 # source ./../../venv/bin/activate
 
 # ParlSpeech2 based corpora 
@@ -17,10 +17,15 @@ INPUTPATH='../../data/manifestos/raw'
 OUTPUTPATH='../../data/manifestos/sentences'
 
 # list .txt files in INPUTPATH recursively and iterate over them
-for input_file in $(find ${INPUTPATH} -name '*.txt'); do
+for input_file in $(find ${INPUTPATH} -name '*.txt' | head -n 3); do
+    
     output_file="$OUTPUTPATH/${file#${INPUTPATH}}"
+    # get the dirnmae of output_file and create it recursively
+    mkdir -p $(dirname $output_file)
+
     # get the part behind - and before .txt in the file name to use as language code
     lang=$(basename $input_file | sed -n 's/.*-\([a-z-]*\)\.txt/\1/p')
+    
     echo $lang
     # # split sentences
     # python3 sentence_split.py \
