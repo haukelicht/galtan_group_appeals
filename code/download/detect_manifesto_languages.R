@@ -21,8 +21,6 @@ rawdata_path <- file.path(data_path, "manifestos", "raw")
 
 files <- list.files(rawdata_path, pattern = "-unknown.txt", include.dirs = FALSE, recursive = TRUE, full.names = TRUE)
 
-fp <- files[1]
-
 detect_languages <- function(fp, n.heighest = 1) {
   lines <- read_lines(fp)
   langs = cld2::detect_language(lines)
@@ -52,16 +50,29 @@ res
 
 
 codes2names <- c(
+  "bg" = "bulgarian",
   "cs" = "czech",
   "da" = "danish",
   "de" = "german",
   "el" = "greek",
   "en" = "english",
+  "es" = "spanish",
   "et" = "estonian",
+  "fi" = "finnish",
   "fr" = "french",
+  "hr" = "croatian",
+  "hu" = "hungarian",
+  "is" = "icelandic",
+  "is" = "islandic",
+  "it" = "italian",
+  "ja" = "japanese",
   "nl" = "dutch",
   "pl" = "polish",
-  "pt" = "portuguese"
+  "pt" = "portuguese",
+  "ro" = "romanian",
+  "sk" = "slovak",
+  "sl" = "slovenian",
+  NULL
 )
 
 res |> 

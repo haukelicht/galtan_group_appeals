@@ -18,7 +18,7 @@ library(officer)
 
 
 data_path <- "data"
-manifestos_path <- file.path(data_path, "manifestos/annotated")
+manifestos_path <- file.path(data_path, "manifestos", "annotated")
 
 # read data ----
 

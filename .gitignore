@@ -7,6 +7,8 @@ group_appeals_galtan_parties.Rproj
 .Renviron
 .env
 .vscode/
+*/**/*.ipynb
+
 
 .DS_Store
 */**/.DS_Store
@@ -25,6 +27,7 @@ code/**/*.err
 
 data/
 
+admin/
 docu/
 notes/
 renv/
