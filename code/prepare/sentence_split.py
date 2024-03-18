@@ -39,7 +39,7 @@ def main(args):
     lines = [normalizer.normalize(line) for line in lines]
 
     sentences = []
-    for i in tqdm(range(0, n, args.batch_size), total=n//args.batch_size, desc='Splitting texts into sentences'):
+    for i in tqdm(range(0, n, args.batch_size), total=n//args.batch_size, desc=f'[{ts()}] INFO: Splitting texts into sentences'):
         batch = lines[i:i+args.batch_size]
         batch = tokenizer.bulk_process(batch)
         batch = [sent.text for doc in batch for sent in doc.sentences]

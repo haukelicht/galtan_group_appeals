@@ -16,6 +16,8 @@ Icon?
 #code
 code/preproc/
 code/**/xx_deprecated/
+code/**/*.log
+code/**/*.err
 #R
 #README.md
 #renv.lock
