@@ -124,7 +124,7 @@ def main(args):
       log(f'ERROR: couldn\'t process data fro group {grp}: {str(e)}')
       continue
     
-    tmp = pd.concat([d[group_by_cols], tmp], axis=1)
+    tmp = pd.concat([d[group_by_cols].reset_index(drop=True), tmp.reset_index(drop=True)], axis=1)
     ranked.append(tmp)
 
     if args.max_groups > 0 and len(ranked) >= args.max_groups:
@@ -132,10 +132,11 @@ def main(args):
 
   ranked = pd.concat(ranked, axis=0)
   ranked.rename(columns={'text_id': args.id_col}, inplace=True)
+  ranked.reset_index(drop=True, inplace=True)
 
   if '__group__' in ranked.columns:
     ranked.drop(columns='__group__', inplace=True)
-  
+
   # -- write the results -----
 
   ext = os.path.splitext(args.output_file)[1]
