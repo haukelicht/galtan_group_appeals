@@ -1,3 +1,4 @@
+#!/bin/bash
 #SBATCH --time=01:00:00
 #SBATCH --gpus=1
 #SBATCH --gres=gpumem:40G
@@ -13,8 +14,8 @@ source ./../../venv/bin/activate
 
 DATAPATH='../../data/manifestos'
 
-pyhton3 informativeness_ranking.py \
-    --input_file "$DATAPATH/'test_sentences.tsv" \
+python informativeness_ranking.py \
+    --input_file "$DATAPATH/test_sentences.tsv" \
     --text_col 'text' \
     --id_col 'sentence_id' \
     --output_file "$DATAPATH/test_sentences_informativeness_ranking.tsv" --overwrite_output_file \

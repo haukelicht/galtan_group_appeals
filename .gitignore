@@ -5,10 +5,12 @@ group_appeals_galtan_parties.Rproj
 .Rprofile
 .Rsession
 .Renviron
+
 .env
+
 .vscode/
 */**/*.ipynb
-
+*/**/__pycache__/
 
 .DS_Store
 */**/.DS_Store
@@ -31,6 +33,7 @@ admin/
 docu/
 notes/
 renv/
+venv/
 
 Codebook/
 Literature/

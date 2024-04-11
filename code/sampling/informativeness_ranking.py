@@ -76,7 +76,7 @@ def main(args):
 
   # read the data
   ext = os.path.splitext(args.input_file)[1]
-  sep = ',' if ext=='csv' else '\t' if ext in ['tsv', 'tab'] else None
+  sep = ',' if ext=='.csv' else '\t' if ext in ['.tsv', '.tab'] else None
   if args.verbose: log(f'Reading data from file "{args.input_file}"')
   try:
     df = pd.read_csv(args.input_file, sep=sep)
@@ -117,7 +117,7 @@ def main(args):
   # -- write the results -----
 
   ext = os.path.splitext(args.output_file)[1]
-  sep = ',' if ext=='csv' else '\t' if ext in ['tsv', 'tab'] else None
+  sep = ',' if ext=='.csv' else '\t' if ext in ['.tsv', '.tab'] else None
   if args.verbose: log(f'Writing results to file "{args.output_file}"')
   try:
     ranked.to_csv(args.output_file, sep=sep, index=False)

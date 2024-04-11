@@ -1,7 +1,7 @@
 #!/bin/bash
 module load gcc/8.2.0 python_gpu/3.11.2 eth_proxy
 
-cd ..
+# cd ..
 
 # create a virtual environment
 python3 -m venv --system-site-packages venv 
