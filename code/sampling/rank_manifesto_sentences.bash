@@ -17,10 +17,11 @@ python informativeness_ranking.py \
     --input_file "$DATAPATH/test_sentences.tsv" \
     --text_col 'text' \
     --id_col 'sentence_id' \
+    --group_by 'manifesto_id' \
     --output_file "$DATAPATH/test_sentences_informativeness_ranking.tsv" --overwrite_output_file \
     --embedding_model 'intfloat/multilingual-e5-large-instruct' --embedding_batch_size 256 \
     --device 'cuda:0' \
     --seed 1234 \
-    --epochs 25000 \
+    --epochs 10000 \
     --verbose
 
