@@ -14,6 +14,7 @@ def embed_and_rank(
     texts: List[str],
     text_ids: List[Union[str, int]],
     embedding_model: str,
+    embedding_batch_size: int=128,
     device: Union[str, torch.device]='cpu',
     epochs: int=25_000,
     seed: int=42,
@@ -28,7 +29,7 @@ def embed_and_rank(
   if verbose: log(f'(Down)loading embedding model')
   model = SentenceTransformer(embedding_model, device=device)
   if verbose: log(f'Embedding {n_} texts')
-  embeddings = model.encode(texts, show_progress_bar=verbose, convert_to_tensor=True, normalize_embeddings=True, batch_size=128)
+  embeddings = model.encode(texts, show_progress_bar=verbose, convert_to_tensor=True, normalize_embeddings=True, batch_size=embedding_batch_size)
 
   del model
   clean_memory(device=device)
@@ -38,7 +39,9 @@ def embed_and_rank(
   ranker = ReconstructionLossRanker(hdim=embeddings.shape[0], num_epochs=epochs, log_n_steps=5_000, device=device, seed=seed)
   idxs, _ = ranker.fit(data=embeddings, verbose=verbose)
   ranker.cpu();
+  
   del ranker
+  clean_memory(device=device)
 
   # return
   out = {'text_id': text_ids}
@@ -144,6 +147,7 @@ if __name__ == '__main__':
   parser.add_argument('--text_col', type=str, default='text', help='Name of column containing texts to be translated', required=True)
   parser.add_argument('--id_col', type=str, default='text_en', help='Name of column that containing texts\' IDs', required=True)
   parser.add_argument('--embedding_model', type=str, help='hugging face identifier of embedding model (loaded using SentenceTransformer)', required=True)
+  parser.add_argument('--embedding_batch_size', type=int, default=128, help='embedding model encoding batch size')
   parser.add_argument('--device', type=str, default=None, help='device to use for embedding and fitting the ranking model')
   parser.add_argument('--epochs', type=int, default=25_000, help='Number of epochs (forward-backward steps) used to fit the ranking model')
   parser.add_argument('--seed', type=int, default=1234, help='Random seed')

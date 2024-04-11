@@ -138,6 +138,7 @@ class ReconstructionLossRanker(nn.Module):
 
       # stop of update stoping criterion
       if eval_loss > prev_eval_loss:
+        if verbose: log(f'Final loss after {epoch+1} epochs: {eval_loss:.4f}')
         break
       else:
         prev_eval_loss = eval_loss

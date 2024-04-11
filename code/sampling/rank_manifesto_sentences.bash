@@ -1,7 +1,6 @@
 #!/bin/bash
 #SBATCH --time=01:00:00
-#SBATCH --gpus=1
-#SBATCH --gres=gpumem:40G
+#SBATCH --gpus=a100-pcie-40gb:4
 #SBATCH --mem-per-cpu=32G
 #SBATCH --mail-type=BEGIN,END,FAIL
 #SBATCH --mail-user=hauke.licht@wiso.uni-koeln.de
@@ -19,7 +18,7 @@ python informativeness_ranking.py \
     --text_col 'text' \
     --id_col 'sentence_id' \
     --output_file "$DATAPATH/test_sentences_informativeness_ranking.tsv" --overwrite_output_file \
-    --embedding_model 'intfloat/multilingual-e5-large-instruct' \
+    --embedding_model 'intfloat/multilingual-e5-large-instruct' --embedding_batch_size 256 \
     --device 'cuda:0' \
     --seed 1234 \
     --epochs 25000 \
