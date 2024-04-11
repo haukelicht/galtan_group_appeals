@@ -8,12 +8,13 @@ from reconstruction_loss_ranker import ReconstructionLossRanker
 
 from utils import log, clean_memory
 
+from tqdm.auto import tqdm
 from typing import List, Union
 
 def embed_and_rank(
     texts: List[str],
     text_ids: List[Union[str, int]],
-    embedding_model: str,
+    embedding_model: SentenceTransformer,
     embedding_batch_size: int=128,
     device: Union[str, torch.device]='cpu',
     epochs: int=25_000,
@@ -26,13 +27,8 @@ def embed_and_rank(
   n_ = len(texts)
 
   # embed
-  if verbose: log(f'(Down)loading embedding model')
-  model = SentenceTransformer(embedding_model, device=device)
   if verbose: log(f'Embedding {n_} texts')
-  embeddings = model.encode(texts, show_progress_bar=verbose, convert_to_tensor=True, normalize_embeddings=True, batch_size=embedding_batch_size)
-
-  del model
-  clean_memory(device=device)
+  embeddings = embedding_model.encode(texts, show_progress_bar=verbose, convert_to_tensor=True, normalize_embeddings=True, batch_size=embedding_batch_size)
 
   # rank
   if verbose: log('Learning ranking from embeddings')
@@ -89,7 +85,13 @@ def main(args):
 
   # check that columns exist
   cols = [args.text_col, args.id_col]
-  assert all(c in df.columns for c in cols), ValueError(f'Data frame must have columns {cols}')
+  if args.group_by is None:
+    df['__group__'] = 0
+    group_by_cols = ['__group__']
+  else:
+    group_by_cols = [col.strip() for col in args.group_by.split(',')]
+  cols += group_by_cols
+  assert all(col in df.columns for col in cols), ValueError(f'Data frame must have columns {cols}')
 
   # subset to columns
   df = df[cols]
@@ -99,24 +101,41 @@ def main(args):
   df = df[~df[args.text_col].str.match('^\s+$')]
 
   # -- embedding texts and fitting the ranking model -----
-  try:
-    ranked = embed_and_rank(
-      texts=df[args.text_col].to_list(),
-      text_ids=df[args.id_col].to_list(),
-      embedding_model=args.embedding_model,
-      device=device,
-      seed=args.seed,
-      epochs=args.epochs,
-      sort_by_informativeness=False,
-      verbose=args.verbose
-    )
-  except Exception as e:
-    if 'out of memory' not in str(e):
-      log('ERROR: GPU out of memory')
-    raise e
+  if args.verbose: log(f'(Down)loading embedding model')
+  model = SentenceTransformer(args.embedding_model, device=device)
 
+  # count number of groups
+  n_groups = df.groupby(group_by_cols).ngroups
+  ranked = []
+  for g, d in tqdm(df.groupby(group_by_cols), total=n_groups, desc='Processing groups'):
+    try:
+      tmp = embed_and_rank(
+        texts=d[args.text_col].to_list(),
+        text_ids=d[args.id_col].to_list(),
+        embedding_model=model,
+        device=device,
+        seed=args.seed,
+        epochs=args.epochs,
+        sort_by_informativeness=False,
+        verbose=args.verbose if n_groups==1 else False
+      )
+    except Exception as e:
+      grp = ', '.join([f'{k}={v}' for k, v in zip(group_by_cols, g)])
+      log(f'ERROR: couldn\'t process data fro group {grp}: {str(e)}')
+      continue
+    
+    tmp = pd.concat([d[group_by_cols], tmp], axis=1)
+    ranked.append(tmp)
+
+    if args.max_groups > 0 and len(ranked) >= args.max_groups:
+      break
+
+  ranked = pd.concat(ranked, axis=0)
   ranked.rename(columns={'text_id': args.id_col}, inplace=True)
 
+  if '__group__' in ranked.columns:
+    ranked.drop(columns='__group__', inplace=True)
+  
   # -- write the results -----
 
   ext = os.path.splitext(args.output_file)[1]
@@ -145,7 +164,9 @@ if __name__ == '__main__':
   parser.add_argument('-o', '--output_file', type=str, help='Output file. If not specified and --overwrite_output_file is set, input file will be overwritten.', required=True)
   parser.add_argument('--overwrite_output_file', action='store_true', help='Overwrite output file if it exists. If output file not specified, input file will be overwritten.')
   parser.add_argument('--text_col', type=str, default='text', help='Name of column containing texts to be translated', required=True)
-  parser.add_argument('--id_col', type=str, default='text_en', help='Name of column that containing texts\' IDs', required=True)
+  parser.add_argument('--id_col', type=str, help='Name of column that containing texts\' IDs', required=True)
+  parser.add_argument('--group_by', type=str, help='Name(s) of column(s) to group by')
+  parser.add_argument('--max_groups', type=int, default=-1)
   parser.add_argument('--embedding_model', type=str, help='hugging face identifier of embedding model (loaded using SentenceTransformer)', required=True)
   parser.add_argument('--embedding_batch_size', type=int, default=128, help='embedding model encoding batch size')
   parser.add_argument('--device', type=str, default=None, help='device to use for embedding and fitting the ranking model')
