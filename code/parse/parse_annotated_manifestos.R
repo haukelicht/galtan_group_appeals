@@ -3,6 +3,7 @@
 #' @title  Parse group appeals annotations from annotated docx files
 #' @author Hauke Licht
 #' @date   2023-05-31
+#' @update 2024-03-20
 #
 # +~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~ #
 
@@ -15,35 +16,54 @@ library(purrr)
 library(stringi)
 library(stringr)
 library(officer)
+library(ggplot2)
 
-
-data_path <- "data"
-manifestos_path <- file.path(data_path, "manifestos", "annotated")
+data_path <- file.path("data",  "manifestos")
+manifestos_path <- file.path(data_path, "annotated")
 
 # read data ----
 
 docx_files <- list.files(manifestos_path, pattern = "^[^~].+\\.docx$", full.names = TRUE)
 
+names(docx_files) <- sub("\\.docx$", "", basename(docx_files))
 docs <- map(docx_files, read_docx)
 
-doc <- docs[[1]]
+length(docs)
+i <- 7
+names(docs)[i]
+doc <- docs[[i]]
 
 cont <- as_tibble(docx_summary(doc))
 
-table(unlist(str_extract_all(cont$text, "\\[[^s:\\]]+")))
+# table(unlist(str_extract_all(cont$text, "\\[[^\\]]+")))
+table(unlist(str_extract_all(cont$text, "\\[Group[^\\]]+\\]")))
 
+#' issues
+#' - not a single group appeal 
+#'    - Manifesto 1985 Progress Party Norway_RECODED
+#'    - Manifesto 1989 Progress Party Norway_RECODED
+#'    - Manifesto 1991 New Democracy Sweden_RECODED
+#'    - Manifesto 1994 National Alliance Italy_RECODED
+#'    - Manifesto 1994 Northern League Italy_RECODED
+#'    - Manifesto 1999 Swiss Peoples Party_CODED
+#'    - Manifesto 2001 Danish Peoples Party
+#'    - Manifesto 2002 List Pim Fortuyn Netherlands_Leonce
+#'    - Manifesto 2016 Republicans USA_RECODED
 
 s <- grep("^\\[Here does the program start", cont$text)
 
+if (length(s) == 0)
+  s <- 0L
+
 cont <- cont[(s+1):nrow(cont), ]
 
-cont <- cont[-grep("^\\h*$", cont$text), ]
+cont <- cont[!grepl("^\\h*$", cont$text), ]
 
-(par <- cont$text[8])
-
-sents <- stri_split_boundaries(par, type = "sentence", locale = "en_EN")[[1]]
-
-(sent <- sents[1])
+# (par <- cont$text[149])
+# 
+# sents <- stri_split_boundaries(par, type = "sentence", locale = "en_EN")[[1]]
+# 
+# (sent <- sents[1])
 
 parse_sentence <- function(sent) {
   # # test
@@ -59,6 +79,8 @@ parse_sentence <- function(sent) {
   # segment sentence into subsets with spans at beginning
   chars <- strsplit(sent, "")[[1]]
   segs <- map2(c(1, s), c(s-1, nchar(sent)), ~paste(chars[.x:.y], collapse = ""))
+  if (segs[[1]] == "[")
+    segs[[1]] <- NULL
   
   # iterate over segments
   segs <- map_dfr(segs, function(seg) { # seg <- segs[[2]]
@@ -118,3 +140,46 @@ parse_paragraph <- function(par) {
 }
 
 # View(map_dfr(cont$text[1:10], parse_paragraph, .id = "par_nr"))
+
+nrow(cont)
+out <- map_dfr(cont$text, parse_paragraph, .id = "paragraph_nr")
+View(out)
+
+tmp <- out |> 
+  filter(!map_lgl(annotations, is.null)) |> 
+  unnest(annotations) |> 
+  filter(grepl("^\\[Group", label)) |> 
+  mutate(
+    group_types = strsplit(gsub("^\\[Group appeal:\\s*|\\s*\\]$", "", label), "[;,]\\s*"),
+    polarity = group_types |> 
+      map(str_extract, pattern = "_[pnt]{1,2}$") |> 
+      map(unique),
+    n_polarities = lengths(polarity),
+    group_types = group_types |> 
+      map(str_remove, pattern = "_[pnt]{1,2}$") |> 
+      map(tolower)
+  ) |> 
+  filter(n_polarities == 1) |> 
+  # with(table(n_polarities))
+  mutate(
+    polarity = sub("^_", "", map_chr(polarity, first)),
+    n_polarities = NULL
+  ) #|> 
+  
+with(tmp, table(polarity)) |> prop.table()
+# note: strong class imbalance!
+
+# tmp |> 
+#   filter(polarity == "n") |> 
+#   with(table(label))
+
+tmp |> 
+  select(group_types) |> 
+  unnest(group_types) |> 
+  count(group_types) |> 
+  arrange(desc(n)) |> 
+  ggplot(aes(y = reorder(group_types, n), x = n)) + 
+    geom_col() + 
+    labs(y = NULL)
+
+

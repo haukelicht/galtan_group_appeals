@@ -3,7 +3,7 @@
 #' @title  Download manifesto raw texts
 #' @author Hauke Licht
 #' @date   2023-05-31
-#' @update 2024-03-07
+#' @update 2024-03-20
 #
 # +~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~ #
 
@@ -19,16 +19,15 @@ library(stringr)
 library(lubridate)
 source(file.path("R", "manifestoR_utils.R"))
 
-data_path <- file.path("data")
-cases_path <- file.path(data_path, "manifestos", "cases")
-rawdata_path <- file.path(data_path, "manifestos", "raw")
+data_path <- file.path("data", "manifestos")
+rawdata_path <- file.path(data_path, "raw")
 dir.create(rawdata_path, showWarnings = FALSE, recursive = TRUE)
-sentence_data_path <- file.path(data_path, "manifestos", "sentences")
+sentence_data_path <- file.path(data_path, "sentences")
 dir.create(sentence_data_path, showWarnings = FALSE, recursive = TRUE)
 
 # determine download sources ----
 
-manifesto_sources <- read_tsv(file.path(cases_path, "dataset_population_sources_2023-06-05.tsv"))
+manifesto_sources <- read_tsv(file.path(data_path, "manifesto_sources.tsv"))
 
 # download from manifestoVault V1.0 ----
 
@@ -140,7 +139,7 @@ nrow(cmp_data_df)
 # for how many have we quasi-sentence level data (i.e., "annotations")
 prop.table(table(cmp_data_df$annotations))
 # notes: 
-#  - only 2/3 have annotations at quasi-sentence level
+#  - only ~60% have annotations at quasi-sentence level
 #  - the rest is just one long text string per manifesto
 #  - below, we'll process these differently 
 
@@ -162,35 +161,38 @@ table(is.na(cmp_data_df_long$cmp_code))
 table(cmp_data_df_long$cmp_code == 'H')
 
 # # note: the commented-out code below helps identifying characters that identify bullet points
-# tab <- cmp_data_df_long |> 
-#   filter(grepl("^\\s?\\W", text)) |> 
-#   pull(text) |> 
-#   str_extract("^\\P{L}*(?=\\s*\\p{L})") |> 
-#   table() |> 
+# tab <- cmp_data_df_long |>
+#   filter(grepl("^\\s?\\W", text)) |>
+#   pull(text) |>
+#   str_extract("^[^\\p{L}\\s]*(?=\\s*\\p{L})") |>
+#   table() |>
 #   sort(decreasing = TRUE)
 # 
-# names(tab)[(50:59)+110]
-# length(tab)
-# i = 134
-# names(tab)[i]
-# # grepl("\\p{Pd}", "−", perl = TRUE)
-# tab[i]
-# sprintf("%X", utf8ToInt(names(tab)[i]))
-# sprintf("%X", utf8ToInt("."))
+# chars <- names(tab)
+# tab <- tab[-grep("^//", chars)]
+# chars <- names(tab)
 # 
-# cmp_data_df_long |> 
-#   mutate(r_ = row_number()) |> 
-#   filter(grepl("^\\s?\\W", text)) |> 
-#   filter(grepl(paste0("^", names(tab)[i]), text)) |>
+# chars[(1:10)+110]
+# # length(tab)
+# i = 113
+# cat(chars[i])
+# # grepl("\\p{Pd}", chars[i], perl = TRUE)
+# # grepl("\\p{Pc}", chars[i], perl = TRUE)
+# sprintf("%X", utf8ToInt(chars[i]))
+# 
+# cmp_data_df_long |>
+#   mutate(r_ = row_number()) |>
+#   filter(grepl("^\\s?\\W", text)) |>
+#   filter(grepl(paste0("^", chars[i]), text)) |>
 #   # filter(grepl("^\\.{3}", text)) |>
 #   # sample_n(20) |>
 #   View()
 
 bullet_point_chars <- c(
-  "\u2022", ">+ ", "» ", "\\*", "√", "·", "o\\s+→", "−", "• …", "·\\s+•", "¾", "► ", "§ ", "o ",
+  "\u2022+", ">+ ", "» ", "\\*", "√", "·", "→", "o\\s+→", "• …", "·\\s+•", "¾", "► ", "§ ", "o ",
   # private use
-  "§\uF0A7 ", "\uF0B7", "\uF076", "\uf0b7", "\\p{Co}",
-  "\\p{Pd}+","\\p{Pc}+",
+  "§?\uF0A7 ", "\uF0B7", "\uF020", "\uF076", "\uf0b7", "\u25BA", "\uF09F", "\\p{Co}",
+  "\\p{Pd}+", "\\p{Pc}+", "−+",
   "\\(\\p{Ll}\\) ",
   "\\(\\d{1,2}\\) ",
   "\\d{1,2}\\) ",
@@ -209,7 +211,7 @@ remove <- c(
   "^\\s*\\*+\\s*$",
   "^…(?!\\s)",
   "^\uFFFD",
-  "^\uF020",
+  "^\uF02F",
   "^\\|",
   "^‖",
   "\\(…\\)",
@@ -286,7 +288,10 @@ tmp <- cmp_data_df_long |>
   mutate(path = file.path(rawdata_path, tolower(country_iso3c), date, sprintf("%s-%s.txt", manifesto_id, language)))
 
 # write to disk 
-res <- map2(tmp$text, tmp$path, ~write_lines(.x, .y))
+res <- map2(tmp$text, tmp$path, function(x, fp) {
+  dir.create(dirname(fp), recursive = TRUE, showWarnings = FALSE)
+  write_lines(x, fp)
+})
 
 # remove the processed manifestos from the corpus data frame
 cmp_data_df <- anti_join(cmp_data_df, select(tmp, manifesto_id))
@@ -306,6 +311,7 @@ cmp_data_df_long <- cmp_data_df %>%
 # write_lines(cmp_data_df_long$text[idx], "~/Downloads/manifesto.txt")
 
 bullet_point_regex <- sprintf("(^|\\s)(%s)\\h*", paste(bullet_point_chars, collapse = "|"))
+
 # set.seed(42)
 tmp <- cmp_data_df_long |> 
   # sample_n(1) |> 
@@ -340,8 +346,7 @@ tmp <- cmp_data_df_long |>
   filter(
     !grepl("^\\h*$", text, perl = TRUE),
     !grepl("^\\P{L}*$", text, perl = TRUE),
-  ) #|> 
-  # View()
+  )
   
 tmp <- tmp |> 
   group_by(manifesto_id, language) |> 
@@ -354,7 +359,10 @@ tmp <- tmp |>
   )
 
 # write to disk 
-res <- map2(tmp$text, tmp$path, ~write_lines(.x, .y))
+res <- map2(tmp$text, tmp$path, function(x, fp) {
+  dir.create(dirname(fp), recursive = TRUE, showWarnings = FALSE)
+  write_lines(x, fp)
+})
 
 # remove the processed manifestos from the corpus data frame
 manifesto_sources <- anti_join(manifesto_sources, select(tmp, manifesto_id))
@@ -411,5 +419,5 @@ missing_manifestos |>
 
 View(missing_manifestos)
 
-write_tsv(missing_manifestos, file.path(cases_path, "missing_manifesto_raw_texts_2024-03-11.tsv"))
+write_tsv(missing_manifestos, file.path(data_path, "cases", "missing_manifesto_raw_texts_2024-03-20.tsv"))
 

@@ -2,7 +2,7 @@
 #
 #' @title  Prepare data folder structure
 #' @author Hauke Licht
-#' @date   
+#' @date   2024-03-07
 #
 # +~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~ #
 
@@ -13,12 +13,12 @@ library(readr)
 library(dplyr)
 library(purrr)
 
-data_path <- file.path("data")
+data_path <- file.path("data", "manifestos")
 output_path <- file.path(data_path, "manifestos", "raw")
 
 # create folders ---- 
 
-cases <- read_tsv(file.path(data_path, "dataset_population.tsv"))
+cases <- read_tsv(file.path(data_path, "manifesto_sources.tsv"))
 
 table(is.na(cases$manifesto_id))
 paths <- cases |> 

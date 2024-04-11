@@ -9,10 +9,10 @@ tmp <- overview |>
   mutate(file_name = sprintf("%s_%s", party, substr(date, 1, 4)))
 
 dest <- "data/manifestos/raw"
-src <- file.path("Missing\ Manifestos", paste0(tmp$file_name, ".pdf"))
+src <- file.path(source_path, paste0(tmp$file_name, ".pdf"))
 tgt <- with(tmp, file.path(dest, country, date, paste0(manifesto_id, ".pdf")))
 map2(src, tgt, file.copy, overwrite = TRUE)
 
-src <- file.path("Missing\ Manifestos", paste0(tmp$file_name, ".docx"))
+src <- file.path(source_path, paste0(tmp$file_name, ".docx"))
 tgt <- with(tmp, file.path(dest, country, date, paste0(manifesto_id, ".docx")))
 map2(src, tgt, file.copy, overwrite = TRUE)

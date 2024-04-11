@@ -3,7 +3,7 @@
 #' @title  Detect languages of raw texts
 #' @author Hauke Licht
 #' @date   2023-05-31
-#' @update 2024-03-07
+#' @update 2024-03-20
 #
 # +~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~+~ #
 
@@ -15,9 +15,8 @@ library(tidyr)
 library(purrr)
 library(cld2)
 
-data_path <- file.path("data")
-rawdata_path <- file.path(data_path, "manifestos", "raw")
-
+data_path <- file.path("data", "manifestos")
+rawdata_path <- file.path(data_path, "raw")
 
 files <- list.files(rawdata_path, pattern = "-unknown.txt", include.dirs = FALSE, recursive = TRUE, full.names = TRUE)
 
@@ -45,35 +44,12 @@ res <- tibble(fp = files) |>
 # inspect  
 count(res, country_iso3c, lang)
 # note: this makes sense
+
 distinct(res, lang)
-res
 
+lang_codes <- read_csv("data/manifestos/language_codes.csv")
+codes2names <- with(lang_codes, setNames(language, code))
 
-codes2names <- c(
-  "bg" = "bulgarian",
-  "cs" = "czech",
-  "da" = "danish",
-  "de" = "german",
-  "el" = "greek",
-  "en" = "english",
-  "es" = "spanish",
-  "et" = "estonian",
-  "fi" = "finnish",
-  "fr" = "french",
-  "hr" = "croatian",
-  "hu" = "hungarian",
-  "is" = "icelandic",
-  "is" = "islandic",
-  "it" = "italian",
-  "ja" = "japanese",
-  "nl" = "dutch",
-  "pl" = "polish",
-  "pt" = "portuguese",
-  "ro" = "romanian",
-  "sk" = "slovak",
-  "sl" = "slovenian",
-  NULL
-)
 
 res |> 
   transmute(
