@@ -28,6 +28,7 @@ code/**/*.err
 #setup
 
 data/
+!data/annotations/group-mention-annotation-batch-01/*
 
 admin/
 docu/
