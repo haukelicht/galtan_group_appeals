@@ -30,6 +30,9 @@ code/**/*.err
 data/
 !data/annotations/group-mention-annotation-batch-01/*
 
+results/**/checkpoints/
+results/**/best_model/
+
 admin/
 docu/
 notes/
