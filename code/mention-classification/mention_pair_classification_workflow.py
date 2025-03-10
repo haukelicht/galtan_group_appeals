@@ -1,6 +1,7 @@
 import sys
 import os
 import asyncio
+from tqdm import tqdm
 
 from pydantic import BaseModel, Field
 from typing import List, Literal, Optional, Any
@@ -26,6 +27,7 @@ if __name__ == '__main__':
     parser.add_argument('-o', '--output_file', type=str, default=None)
     parser.add_argument('--overwrite_output_file', action='store_true')
     parser.add_argument('--test', action='store_true')
+    parser.add_argument('--n_test', type=int, default=10)
     args = parser.parse_args()
 else:
     from types import SimpleNamespace
@@ -219,7 +221,7 @@ import pandas as pd
 df = pd.read_csv(args.input_file, sep="\t")
 
 if args.test:
-    df = df.head(5)
+    df = df.head(min(args.n_test, len(df)))
 
 # ### Init the workflow
 
@@ -234,13 +236,18 @@ w = MentionPairClassificationWorkflow(
 # ### Run
 
 async def process(row):
-    response = await w.run(input=[row.mention_a, row.mention_b])
     out = row.to_dict()
-    out.update(response.model_dump())
+    try:
+        response = await w.run(input=[row.mention_a, row.mention_b])
+    except Exception as e:
+        print('WARNING: could not process mention pair. Reason:', str(e))
+        out['error'] = str(e)
+    else:
+        out.update(response.model_dump())
     return out
 
 outputs = []
-for i, row in df.iterrows():
+for i, row in tqdm(df.iterrows(), total=len(df)):
     output = asyncio.run(process(row))
     outputs.append(output)
 
@@ -257,7 +264,7 @@ dest = os.path.dirname(args.output_file)
 os.makedirs(dest, exist_ok=True)
 
 try:
-    write_jsonlines(outputs, file=args.output_file)
+    write_jsonlines(outputs, file=args.output_file, overwrite=args.overwrite_output_file)
 except Exception as e:
     raise e
     sys.exit(1)

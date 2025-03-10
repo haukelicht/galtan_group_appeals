@@ -1,5 +1,5 @@
 #!/bin/bash
-# This script runs the k-shot ICL group mention extraction workflow
+# This script runs the zero-shot ICL group mention pair classification  workflow
 
 # conda activate parl_actor_mentions
 
@@ -15,7 +15,7 @@ then
 fi
 
 # hyperparameters
-llms=("phi4:14b" "mistral-small:24b" "qwen2.5:32b" "deepseek-r1:32b" "qwq:32b")
+llms=("phi4:14b" "mistral-small:24b" "qwen2.5:32b" "llama3.3:70b")
 
 # globals variables
 data_path="./../../data/annotations/group_mention_categorization/social-group-mentions-pair-classification"
@@ -23,7 +23,7 @@ input_file="${data_path}/sample.tsv"
 
 for llm in ${llms[@]}; do
         output_file="${data_path}/${llm}_annotations.jsonl"
-        if [ -e "$routput_file" ]; then
+        if [ -e "$output_file" ]; then
             echo "$output_file exists, skipping..."
             continue
         fi
