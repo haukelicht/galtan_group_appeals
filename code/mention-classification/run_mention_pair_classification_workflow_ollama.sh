@@ -15,8 +15,8 @@ then
 fi
 
 # hyperparameters
-llms=("phi4:14b" "mistral-small:24b" "qwen2.5:32b" "llama3.3:70b")
-
+#llms=("phi4:14b" "mistral-small:24b" "qwen2.5:32b" "gemma3:27b")
+llms=("gemma3:27b")
 # globals variables
 data_path="./../../data/annotations/group_mention_categorization/social-group-mentions-pair-classification"
 input_file="${data_path}/sample.tsv"
