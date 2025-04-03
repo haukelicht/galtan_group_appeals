@@ -1,8 +1,10 @@
 pandas==2.2.0
+openpyxl==3.1.5
 swifter==1.4.0
 numpy==1.26.3
 nltk==3.8.1
 stanza==1.6.1
+spacy==3.8.5
 gensim==4.3.2
 matplotlib==3.9.2
 scikit-learn==1.4.2
@@ -13,7 +15,7 @@ datasets==2.20.0
 tokenizers==0.20.1
 transformers==4.45.2
 sentence-transformers==3.2.0
-setfit==1.1.0
+"setfit[absa]==1.1.0"
 seqeval==1.2.2
 krippendorff==0.8.0
 #replicate==0.26.0
