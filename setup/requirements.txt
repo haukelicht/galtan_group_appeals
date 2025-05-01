@@ -1,27 +1,28 @@
-pandas==2.2.0
-openpyxl==3.1.5
-swifter==1.4.0
-numpy==1.26.3
-nltk==3.8.1
-stanza==1.6.1
-spacy==3.8.5
+pandas # ==2.2.0
+openpyxl # ==3.1.5
+swifter # ==1.4.0
+numpy # ==1.26.3
+nltk # ==3.8.1
+stanza # ==1.6.1
+#spacy==3.8.5
 gensim==4.3.2
 matplotlib==3.9.2
 scikit-learn==1.4.2
 scikit-multilearn==0.2.0
-torch~=2.0.1
-accelerate==0.34.2
-datasets==2.20.0
-tokenizers==0.20.1
-transformers==4.45.2
-sentence-transformers==3.2.0
-"setfit[absa]==1.1.0"
+torch # ~=2.0.1
+# accelerate==0.34.2
+# datasets==2.20.0
+# sentencepiece
+# tokenizers==0.20.1
+transformers==4.50.3
+sentence-transformers==4.0.0
+setfit[absa]
 seqeval==1.2.2
-krippendorff==0.8.0
+krippendorff # ==0.8.0
 #replicate==0.26.0
-#tiktoken==0.6.0
+tiktoken #==0.6.0
 #tenacity==8.3.0
-llama-index==0.12.11
-ollama==0.4.6
-llama-index-llms-ollama==0.5.0
-llama-index-embeddings-ollama==0.5.0
+#llama-index==0.12.11
+#ollama==0.4.6
+#llama-index-llms-ollama==0.5.0
+#llama-index-embeddings-ollama==0.5.0
