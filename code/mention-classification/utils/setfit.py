@@ -598,6 +598,7 @@ class TrainerForSpanClassification(Trainer, SpanColumnMappingMixin):
         super().__init__(*args, **kwargs)
 
         # capture the callbacks
+        # NOTE: mabye better to get callbacks from self.st_trainer (`trainer.st_trainer.callback_handler.callbacks`)
         callbacks = callbacks = kwargs.get("callbacks", None)
         callbacks = callbacks + [ModelCardCallback(self)] if callbacks else [ModelCardCallback(self)]
 
@@ -606,6 +607,7 @@ class TrainerForSpanClassification(Trainer, SpanColumnMappingMixin):
             setfit_model=self.model,
             setfit_args=self.args,
             callbacks=callbacks,
+            # NOTE: now using appropraite data collator
             data_collator=SentenceTransformerDataCollatorForSpanClassification(tokenize_fn=self.model.model_body.tokenize),
         )
 
