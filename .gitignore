@@ -12,6 +12,9 @@ group_appeals_galtan_parties.Rproj
 */**/*.ipynb
 */**/__pycache__/
 
+**/trainer_output/
+**/checkpoints/
+
 .DS_Store
 */**/.DS_Store
 *.docx
