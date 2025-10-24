@@ -89,8 +89,8 @@ class SetFitModelWithEarlyStopping(SetFitModel):
             scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.5)
 
             # Early stopping setup
-            best_metric = float("inf") if not greater_is_better else float("-inf")
-            best_model_state = None
+            best_metric = float("-inf") if greater_is_better else float("inf")
+            best_model_state = {"epoch": None, "body": None, "head": None}
             no_improvement_count = 0
 
             for epoch_idx in trange(num_epochs, desc="Epoch", disable=not show_progress_bar):
@@ -126,20 +126,22 @@ class SetFitModelWithEarlyStopping(SetFitModel):
                 
                 # Validation and early stopping logic
                 if x_eval is not None and y_eval is not None and early_stopping_patience is not None:
-        
+                    print(f"Epoch {epoch_idx + 1}: calculating validation {metric_for_best_model} for early stopping")
                     val_metric = self._compute_eval_metric(eval_dataloader, metric_for_best_model, compute_metrics, epoch_avg_loss, show_progress_bar)
                     
-                    improved = (greater_is_better and val_metric > best_metric + early_stopping_threshold) or \
-                               (not greater_is_better and val_metric < best_metric - early_stopping_threshold)
-                               
+                    improved = \
+                        (greater_is_better and val_metric > (best_metric + early_stopping_threshold)) or \
+                        (not greater_is_better and val_metric < (best_metric - early_stopping_threshold))
+
                     if improved:
-                        best_metric = val_metric
-                        # Save model state
-                        best_model_state = {"body": None, "head": None}
-                        if end_to_end:
-                            best_model_state["body"] = {k: v.cpu() for k, v in self.model_body.state_dict().items()}
-                        best_model_state["head"] = {k: v.cpu() for k, v in self.model_head.state_dict().items()}
                         
+                        best_metric = val_metric
+                        # update best model state
+                        best_model_state["epoch"] = epoch_idx + 1
+                        if end_to_end:
+                            best_model_state["body"] = {k: deepcopy(v.cpu()) for k, v in self.model_body.state_dict().items()}
+                        best_model_state["head"] = {k: deepcopy(v.cpu()) for k, v in self.model_head.state_dict().items()}
+
                         no_improvement_count = 0
                     else:
                         no_improvement_count += 1
@@ -152,18 +154,25 @@ class SetFitModelWithEarlyStopping(SetFitModel):
                 scheduler.step()
             
             # Load best model if early stopping occurred
-            if load_best_model_at_end and best_model_state is not None:
-                print(f"Loading best model")
-                if best_model_state["body"] is not None:
+            if load_best_model_at_end and best_model_state is not None and best_model_state["epoch"] is not None:
+                print(f"Loading best model from epoch {best_model_state['epoch']}")
+                if end_to_end and best_model_state["body"] is not None:
+                    
                     self.model_body.load_state_dict(
                         {k: v.to(self.model_body.device) for k, v in best_model_state["body"].items()}
                     )
-                self.model_head.load_state_dict(
-                    {k: v.to(self.model_head.device) for k, v in best_model_state["head"].items()}
-                )
+                if best_model_state["head"] is not None:
+                    
+                    self.model_head.load_state_dict(
+                        {k: v.to(self.model_head.device) for k, v in best_model_state["head"].items()}
+                    )
 
             if not end_to_end:
                 self.unfreeze("body")
+
+            self.model_body.eval()
+            self.model_head.eval()
+
         else:  # train with sklearn
             if early_stopping_patience:
                 warnings.warn(
@@ -236,11 +245,69 @@ class SetFitModelWithEarlyStopping(SetFitModel):
         print(metrics)
             
         return val_metric
+    
+    # just for convenience
+    def predict_logits(
+        self,
+        inputs: Union[str, List[str]],
+        batch_size: int = 32,
+        as_numpy: bool = False,
+        show_progress_bar: Optional[bool] = None,
+    ) -> Union[torch.Tensor, np.ndarray]:
+        """Predict the logits of the various classes.
+
+        Args:
+            inputs (`Union[str, List[str]]`): The input sentences to predict class probabilities for.
+            batch_size (`int`, defaults to `32`): The batch size to use in encoding the sentences to embeddings.
+                Higher often means faster processing but higher memory usage.
+            as_numpy (`bool`, defaults to `False`): Whether to output as numpy array instead.
+            show_progress_bar (`Optional[bool]`, defaults to `None`): Whether to show a progress bar while encoding.
+
+        Returns:
+            `Union[torch.Tensor, np.ndarray]`: A matrix with shape [INPUT_LENGTH, NUM_CLASSES] denoting
+            logits of predicting an input as a class. If the input is a string, then the output
+            is a vector with shape [NUM_CLASSES,].
+        """
+        is_singular = isinstance(inputs, str)
+        if is_singular:
+            inputs = [inputs]
+        embeddings = self.encode(inputs, batch_size=batch_size, show_progress_bar=show_progress_bar)
+        # replicate logic from head's `predict_proba` but return logits instead of probabilities
+        with torch.no_grad():
+            logits = self.model_head(embeddings)[0]
+        if isinstance(logits, list):
+            if self.has_differentiable_head:
+                logits = torch.stack(logits, axis=1)
+            else:
+                logits = np.stack(logits, axis=1)
+        outputs = self._output_type_conversion(logits, as_numpy=as_numpy)
+        return outputs[0] if is_singular else outputs
+    
 
 @dataclass
 class EarlyStoppingTrainingArguments(TrainingArguments):
     metric_for_best_model: Optional[Tuple[str, str]] = ('embedding_loss', 'loss')
     greater_is_better: Tuple[bool, bool] = (False, False)
+
+# define helper function that precomputes logits and label_ids to format (`y_pred`, `y_test`) required by setfit trainers' `metric` argument
+def _prepare_singlelabel_metrics_fn(p: PredictionOutput):
+    labels = p.label_ids
+    logits = p.predictions
+    if isinstance(logits, torch.Tensor):
+        logits = logits.cpu().numpy()
+    y_pred = logits.argmax(axis=-1)
+    y_test = labels
+    return y_pred, y_test
+
+def _prepare_multilabel_metrics_fn(p: PredictionOutput):
+    labels = p.label_ids
+    logits = p.predictions
+    if isinstance(logits, torch.Tensor):
+        logits = logits.cpu().numpy()
+    probs = 1 / (1 + np.exp(-logits))
+    y_pred = (probs > 0.5).astype(int)
+    y_test = labels
+    return y_pred, y_test
 
 class EarlyStoppingTrainer(Trainer):
 
@@ -274,7 +341,7 @@ class EarlyStoppingTrainer(Trainer):
                     pass
             new_callbacks
         else:
-            new_callbacks = old_callbacks
+            new_callbacks = deepcopy(old_callbacks)
         
         super().__init__(
             model=model,
@@ -288,8 +355,31 @@ class EarlyStoppingTrainer(Trainer):
             column_mapping=column_mapping,
         )
 
-        self._callbacks = old_callbacks
-        self._compute_metrics = compute_metrics
+        self._callbacks = deepcopy(old_callbacks)
+        if isinstance(compute_metrics, Callable):
+            self._compute_metrics = compute_metrics
+        elif isinstance(self.metric, str):
+            import evaluate
+            metric_kwargs = self.metric_kwargs or {}
+            metric_config = None
+            if self.model.multi_target_strategy:
+                metric_config = "multilabel"
+                if "average" not in metric_kwargs or metric_kwargs["average"] == "binary":
+                    # TODO: consider to instead raise an error/warning here
+                    metric_kwargs["average"] = "macro"
+            metric_fn = evaluate.load(self.metric, config_name=metric_config)
+            def compute_metrics(p):
+                y_pred, y_test = _prepare_multilabel_metrics_fn(p) if self.model.multi_target_strategy is not None else _prepare_singlelabel_metrics_fn(p)
+                return metric_fn.compute(predictions=y_pred, references=y_test, **metric_kwargs)
+            self._compute_metrics = compute_metrics
+        elif callable(self.metric):
+            metric_kwargs = self.metric_kwargs or {}
+            def compute_metrics(p):
+                y_pred, y_test = _prepare_multilabel_metrics_fn(p) if self.model.multi_target_strategy is not None else _prepare_singlelabel_metrics_fn(p)
+                return self.metric(y_pred, y_test, **metric_kwargs)
+            self._compute_metrics = compute_metrics
+        else:
+            self._compute_metrics = None
 
     @property
     def args(self) -> Union[TrainingArguments, EarlyStoppingTrainingArguments]:
@@ -401,9 +491,8 @@ class EarlyStoppingTrainer(Trainer):
                 cb = [c for c in self._callbacks if isinstance(c, EarlyStoppingCallback)][-1]
                 early_stopping_kwargs["early_stopping_patience"] = cb.early_stopping_patience
                 early_stopping_kwargs["early_stopping_threshold"] = cb.early_stopping_threshold
-            if isinstance(self._compute_metrics, Callable):
-                early_stopping_kwargs["compute_metrics"] = self._compute_metrics
-            
+            early_stopping_kwargs["compute_metrics"] = self._compute_metrics
+
             self.model.fit(
                 x_train,
                 y_train,

@@ -25,6 +25,13 @@ from transformers import PreTrainedTokenizerBase
 from typing import Dict, List
 TokenizerOutput = Dict[str, List[int]]
 
+from typing import List, Tuple, Union, Optional, overload
+Text = str
+Span = Tuple[int, int]
+TextSpanInputItem = Tuple[Text, Span]
+TextPhraseInputItem = Tuple[Text, str]
+InputItem = Union[TextSpanInputItem, TextPhraseInputItem]
+
 from setfit import SetFitModel, Trainer, TrainingArguments
 from setfit.losses import SupConLoss
 from setfit.trainer import ColumnMappingMixin, BCSentenceTransformersTrainer
@@ -104,26 +111,32 @@ class SpanEmbeddingPooling(Pooling):
 
 
 
-def _process_span_inputs(texts: List[Tuple[str, Union[Tuple[int, int], str]]]):
+def _process_span_inputs(inputs: List[InputItem]):
     """
     Helper function to process the input texts and spans into a list of tuples of texts and span character positions.
 
     Args:
-        texts (List[Tuple[str, Union[Tuple[int, int], str]]]): A list of tuples of texts to be tokenized and the span (positions) they contain.
+        inputs (List[InputItem]): A list of tuples of texts to be tokenized and the span (positions) they contain.
 
     Returns:
         Tuple[List[str], List[Tuple[int, int]]]: A tuple of lists of texts and span character positions
     """
     sentences, spans = [], []
-    for i, (t, s) in enumerate(texts):
+    for i, (t, s) in enumerate(inputs):
         sentences.append(t)
         if isinstance(s, str):
-            m = regex.search(s, t)
+            m = regex.search(regex.escape(s), t)
             if m is None:
                 raise ValueError(f"Could not find '{s}' in '{t}'.")
             spans.append(m.span())
-        else:
+        elif isinstance(s, (tuple, list)) and len(s) == 2 and all(isinstance(pos, int) for pos in s):
+            if s[0] < 0 or s[1] > len(t) or s[0] >= s[1]:
+                raise ValueError(f"Invalid span positions at index {i}: {s} for text of length {len(t)}.")
             spans.append(s)
+        else:
+            raise ValueError(f"Invalid span format at index {i}: {s}. Must be either a string or a tuple or list of two integers.")
+        if isinstance(s, list):
+            s = tuple(s)
     return sentences, spans
 
 
@@ -163,13 +176,14 @@ class SentenceTransformerForSpanEmbedding(SentenceTransformer):
 
     def tokenize(
         self,
-        texts: List[Tuple[str, Union[Tuple[int, int], str]]]
+        # NOTE: keeping the identical to super's encode() and hence using "texts" here
+        texts: List[InputItem]
     ) -> Dict[str, Tensor]:
         """
         Tokenizes the texts.
 
         Args:
-            texts (List[Tuple[str, Union[Tuple[int, int], str]]]): A list of tuples of texts to be tokenized
+            texts (List[InputItem]): A list of tuples of texts to be tokenized
             and the span (positions) they contain.
 
         Returns:
@@ -213,7 +227,8 @@ class SentenceTransformerForSpanEmbedding(SentenceTransformer):
 
     def encode(
         self,
-        sentences: Tuple[str, Union[Tuple[int, int], str]] | List[Tuple[str, Union[Tuple[int, int], str]]],
+        # NOTE: keeping the identical to super's encode() and hence using "sentences" here
+        sentences: InputItem | List[InputItem],
         prompt_name: str | None = None,
         prompt: str | None = None,
         batch_size: int = 32,
@@ -230,7 +245,7 @@ class SentenceTransformerForSpanEmbedding(SentenceTransformer):
         Computes sentence embeddings.
 
         Args:
-            sentences (Tuple[str, Union[Tuple[int, int], str]] | List[Tuple[str, Union[Tuple[int, int], str]]]):
+            sentences (InputItem | List[InputItem]):
                 The tuple(s) of span(s) in sentence(s) to embed.
             prompt_name (Optional[str], optional): The name of the prompt to use for encoding. Must be a key in the `prompts` dictionary,
                 which is either set in the constructor or loaded from the model configuration. For example if
@@ -495,7 +510,314 @@ class SentenceTransformerDataCollatorForSpanClassification(SentenceTransformerDa
         return batch
 
 
-class TrainerForSpanClassification(Trainer, SpanColumnMappingMixin):
+class ContrastiveDatasetForSpanEmbedding(ContrastiveDataset):
+
+    def __init__(
+            self,
+            # NOTE: keeping the identical to super's encode() and hence using "sentences" here
+            sentences: List[TextSpanInputItem],
+            labels: List[Union[int, float]],
+            multilabel: bool,
+            num_iterations: Optional[None] = None,
+            sampling_strategy: str = "oversampling",
+            max_pairs: int = -1,
+        ):
+        IterableDataset.__init__(self)
+        self.pos_index = 0
+        self.neg_index = 0
+        self.pos_pairs = []
+        self.neg_pairs = []
+        self.sentences = [t for t, _ in sentences]
+        self.spans = [s for _, s in sentences]
+        self.labels = labels
+        self.sentence_labels = list(zip(self.sentences, self.spans, self.labels))
+        self.max_pos_or_neg = -1 if max_pairs == -1 else max_pairs // 2
+
+        if multilabel:
+            self.generate_multilabel_pairs()
+        else:
+            self.generate_pairs()
+
+        if num_iterations is not None and num_iterations > 0:
+            self.len_pos_pairs = num_iterations * len(self.sentences)
+            self.len_neg_pairs = num_iterations * len(self.sentences)
+
+        elif sampling_strategy == "unique":
+            self.len_pos_pairs = len(self.pos_pairs)
+            self.len_neg_pairs = len(self.neg_pairs)
+
+        elif sampling_strategy == "undersampling":
+            self.len_pos_pairs = min(len(self.pos_pairs), len(self.neg_pairs))
+            self.len_neg_pairs = min(len(self.pos_pairs), len(self.neg_pairs))
+
+        elif sampling_strategy == "oversampling":
+            self.len_pos_pairs = max(len(self.pos_pairs), len(self.neg_pairs))
+            self.len_neg_pairs = max(len(self.pos_pairs), len(self.neg_pairs))
+
+        else:
+            raise ValueError("Invalid sampling strategy. Must be one of 'unique', 'oversampling', or 'undersampling'.")
+
+
+    def generate_pairs(self) -> None:
+        for (_text, _span, _label), (text, span, label) in shuffle_combinations(self.sentence_labels):
+            is_positive = _label == label
+            is_positive_full = self.max_pos_or_neg != -1 and len(self.pos_pairs) >= self.max_pos_or_neg
+            is_negative_full = self.max_pos_or_neg != -1 and len(self.neg_pairs) >= self.max_pos_or_neg
+
+            if is_positive:
+                if not is_positive_full:
+                    self.pos_pairs.append({"sentence_1": _text, "span_1": _span, "sentence_2": text, "span_2": span, "label": 1.0})
+            elif not is_negative_full:
+                self.neg_pairs.append({"sentence_1": _text, "span_1": _span, "sentence_2": text, "span_2": span, "label": 0.0})
+
+            if is_positive_full and is_negative_full:
+                break
+
+    def generate_multilabel_pairs(self) -> None:
+        for (_text, _span, _label), (text, span, label) in shuffle_combinations(self.sentence_labels):
+            # logical_and checks if labels are both set for each class
+            is_positive = any(np.logical_and(_label, label))
+            is_positive_full = self.max_pos_or_neg != -1 and len(self.pos_pairs) >= self.max_pos_or_neg
+            is_negative_full = self.max_pos_or_neg != -1 and len(self.neg_pairs) >= self.max_pos_or_neg
+
+            if is_positive:
+                if not is_positive_full:
+                    self.pos_pairs.append({"sentence_1": _text, "span_1": _span, "sentence_2": text, "span_2": span, "label": 1.0})
+            elif not is_negative_full:
+                self.neg_pairs.append({"sentence_1": _text, "span_1": _span, "sentence_2": text, "span_2": span, "label": 0.0})
+
+            if is_positive_full and is_negative_full:
+                break
+
+
+class SetFitDatasetForSpanClassification(TorchDataset):
+    """SetFitDatasetForSpanClassification
+
+    A dataset for training the differentiable head on span classification.
+
+    Args:
+        x (`List[Tuple[str, Tuple[int, int]]]`):
+            A list of input data as tuples of texts and span start and end character positions that will be fed into `SetFitModel`.
+        y (`Union[List[int], List[List[int]]]`):
+            A list of input data's labels. Can be a nested list for multi-label classification.
+        tokenizer (`PreTrainedTokenizerBase`):
+            The tokenizer from `SetFitModel`'s body.
+        max_length (`int`, defaults to `32`):
+            The maximum token length a tokenizer can generate.
+            Will pad or truncate tokens when the number of tokens for a text is either smaller or larger than this value.
+    """
+
+    def __init__(
+        self,
+        x: List[TextSpanInputItem],
+        y: Union[List[int], List[List[int]]],
+        tokenizer: "PreTrainedTokenizerBase",
+        max_length: int = 32,
+    ) -> None:
+        assert len(x) == len(y)
+
+        # TODO (maybe): use _process_inputs to extract text and span from input
+        self.sentences, self.spans = _process_span_inputs(x)
+        self.y = y
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+
+    def __len__(self) -> int:
+        return len(self.sentences)
+
+    def __getitem__(self, idx: int) -> Tuple[TokenizerOutput, Union[int, List[int]]]:
+        label = self.y[idx]
+
+        feature = self.tokenizer(
+            self.sentences[idx],
+            max_length=self.max_length,
+            padding="max_length",
+            truncation=True,
+            return_attention_mask="attention_mask" in self.tokenizer.model_input_names,
+            return_token_type_ids="token_type_ids" in self.tokenizer.model_input_names,
+            return_offsets_mapping=True, # <== added to get tokens character locations
+        )
+        # iterate over tokenized inputs and flag locations of spans
+        span = self.spans[idx]
+        span_mask = [0]*len(feature['input_ids'])
+        inside = False
+        for t, (om, am) in enumerate(zip(feature['offset_mapping'], feature['attention_mask'])):
+            if am == 0:
+                break
+            if span[0] in range(*om) and not inside:
+                span_mask[t] = 1
+                inside = True
+            elif span[1]-1 in range(*om) and inside:
+                span_mask[t] = 1
+                inside = False
+            elif inside:
+                span_mask[t] = 1
+        feature.update({'span_mask': span_mask})
+
+        del feature['offset_mapping']
+
+        return feature, label
+
+    def collate_fn(self, batch):
+        features = {input_name: [] for input_name in self.tokenizer.model_input_names + ['span_mask']}
+
+        labels = []
+        for feature, label in batch:
+            features["input_ids"].append(feature["input_ids"])
+            if "attention_mask" in features:
+                features["attention_mask"].append(feature["attention_mask"])
+            if "token_type_ids" in features:
+                features["token_type_ids"].append(feature["token_type_ids"])
+            if "span_mask" in features:
+                features["span_mask"].append(feature["span_mask"])
+            labels.append(label)
+
+        # convert to tensors
+        features = {k: torch.Tensor(v).int() for k, v in features.items()}
+        labels = torch.Tensor(labels)
+        labels = labels.long() if len(labels.size()) == 1 else labels.float()
+        return features, labels
+
+from src.finetuning.setfit_extensions.early_stopping import SetFitModelWithEarlyStopping
+class SetFitModelForSpanClassification(SetFitModelWithEarlyStopping):
+    def _prepare_dataloader(
+            self,
+            x_train: List[TextSpanInputItem],
+            y_train: Union[List[int], List[List[int]]],
+            batch_size: Optional[int] = None,
+            max_length: Optional[int] = None,
+            shuffle: bool = True,
+        ) -> DataLoader:
+            max_acceptable_length = self.model_body.get_max_seq_length()
+            if max_length is None:
+                max_length = max_acceptable_length
+                logger.warning(
+                    f"The `max_length` is `None`. Using the maximum acceptable length according to the current model body: {max_length}."
+                )
+
+            if max_length > max_acceptable_length:
+                logger.warning(
+                    (
+                        f"The specified `max_length`: {max_length} is greater than the maximum length of the current model body: {max_acceptable_length}. "
+                        f"Using {max_acceptable_length} instead."
+                    )
+                )
+                max_length = max_acceptable_length
+
+            dataset = SetFitDatasetForSpanClassification(
+                x_train,
+                y_train,
+                tokenizer=self.model_body.tokenizer,
+                max_length=max_length,
+            )
+            dataloader = DataLoader(
+                dataset,
+                batch_size=batch_size,
+                collate_fn=dataset.collate_fn,
+                shuffle=shuffle,
+                pin_memory=True,
+            )
+
+            return dataloader
+    
+    def _normalize_inputs(
+        self,
+        inputs: Optional[List[InputItem]] = None,
+        *,
+        texts: Optional[List[Text]] = None,
+        spans: Optional[List[Span]] = None,
+        span_texts: Optional[List[Text]] = None,
+    ) -> List[InputItem]:
+        """Normalize all supported input styles to [(text, (start, end)), ...]."""
+        modes = [
+            inputs is not None,
+            texts is not None and spans is not None,
+            texts is not None and span_texts is not None,
+        ]
+        if sum(modes) != 1:
+            raise ValueError(
+                "Provide exactly one of: "
+                "`inputs`, or `texts`+`spans`, or `texts`+`span_texts`."
+            )
+
+        if inputs is not None:
+            return inputs
+
+        if texts is None:
+            raise ValueError("`texts` must be provided when `inputs` is None.")
+
+        if spans is not None:
+            if len(texts) != len(spans):
+                raise ValueError("`texts` and `spans` must have the same length.")
+            return list(zip(texts, spans))
+
+        # texts + span_texts
+        if span_texts is None:
+            raise ValueError("`span_texts` must be provided with `texts`.")
+        if len(texts) != len(span_texts):
+            raise ValueError("`texts` and `span_texts` must have the same length.")
+
+        norm_inputs: List[InputItem] = []
+        for t, st in zip(texts, span_texts):
+            start = t.find(st)
+            if start < 0:
+                raise ValueError(f"Span text {st!r} not found in text: {t[:80]!r}...")
+            end = start + len(st)
+            norm_inputs.append((t, (start, end)))
+        return norm_inputs
+
+    @overload
+    def predict(self, inputs: List[InputItem], **kwargs) -> Union[List[int], List[List[int]], np.ndarray]: ...
+    @overload
+    def predict(self, inputs: None = ..., *, texts: List[Text], spans: List[Span], **kwargs) -> Union[List[int], List[List[int]], np.ndarray]: ...
+    @overload
+    def predict(self, inputs: None = ..., *, texts: List[Text], span_texts: List[str], **kwargs) -> Union[List[int], List[List[int]], np.ndarray]: ...
+    def predict(
+        self,
+        inputs: Optional[List[InputItem]] = None,
+        *,
+        texts: Optional[List[Text]] = None,
+        spans: Optional[List[Span]] = None,
+        span_texts: Optional[List[str]] = None,
+        **kwargs,
+    ) -> Union[List[int], List[List[int]], np.ndarray]:
+        """
+        Accepts one of:
+          - inputs=[(text, (start, end)), ...]
+          - texts=[text, ...], spans=[(start, end), ...]
+          - texts=[text, ...], span_texts=[phrase, ...]
+        """
+        # Validate mutually exclusive interfaces
+        norm_inputs = self._normalize_inputs(inputs, texts=texts, spans=spans, span_texts=span_texts)
+        return super().predict(norm_inputs, **kwargs)
+    
+    @overload
+    def predict_proba(self, inputs: List[InputItem], **kwargs) -> np.ndarray: ...
+    @overload
+    def predict_proba(self, inputs: None = ..., *, texts: List[Text], spans: List[Span], **kwargs) -> np.ndarray: ...
+    @overload
+    def predict_proba(self, inputs: None = ..., *, texts: List[Text], span_texts: List[str], **kwargs) -> np.ndarray: ...
+    def predict_proba(
+            self, 
+            inputs: Optional[List[InputItem]] = None, 
+            *, 
+            texts: Optional[List[Text]] = None, 
+            spans: Optional[List[Span]] = None,
+            span_texts: Optional[List[str]] = None, 
+            **kwargs
+        ) -> np.ndarray:
+        """
+        Accepts one of:
+          - inputs=[(text, (start, end)), ...]
+          - texts=[text, ...], spans=[(start, end), ...]
+          - texts=[text, ...], span_texts=[phrase, ...]
+        """
+        norm_inputs = self._normalize_inputs(inputs, texts=texts, spans=spans, span_texts=span_texts)
+        return super().predict_proba(norm_inputs, **kwargs)
+
+
+from src.finetuning.setfit_extensions.early_stopping import EarlyStoppingTrainer
+class SetFitTrainerForSpanClassification(EarlyStoppingTrainer, SpanColumnMappingMixin):
 
     def __init__(self, *args, **kwargs):
 
@@ -503,7 +825,7 @@ class TrainerForSpanClassification(Trainer, SpanColumnMappingMixin):
 
         # capture the callbacks
         # NOTE: mabye better to get callbacks from self.st_trainer (`trainer.st_trainer.callback_handler.callbacks`)
-        callbacks = callbacks = kwargs.get("callbacks", None)
+        callbacks = kwargs.get("callbacks", None)
         callbacks = callbacks + [ModelCardCallback(self)] if callbacks else [ModelCardCallback(self)]
 
         # re-init the sentence transformer trainer (used when calling `self.train_embeddings()``)
@@ -625,213 +947,3 @@ class TrainerForSpanClassification(Trainer, SpanColumnMappingMixin):
         )
         return results
 
-class ContrastiveDatasetForSpanEmbedding(ContrastiveDataset):
-
-    def __init__(
-            self,
-            sentences: List[Tuple[str, Tuple[int, int]]],
-            labels: List[Union[int, float]],
-            multilabel: bool,
-            num_iterations: Optional[None] = None,
-            sampling_strategy: str = "oversampling",
-            max_pairs: int = -1,
-        ):
-        IterableDataset.__init__(self)
-        self.pos_index = 0
-        self.neg_index = 0
-        self.pos_pairs = []
-        self.neg_pairs = []
-        self.sentences = [t for t, _ in sentences]
-        self.spans = [s for _, s in sentences]
-        self.labels = labels
-        self.sentence_labels = list(zip(self.sentences, self.spans, self.labels))
-        self.max_pos_or_neg = -1 if max_pairs == -1 else max_pairs // 2
-
-        if multilabel:
-            self.generate_multilabel_pairs()
-        else:
-            self.generate_pairs()
-
-        if num_iterations is not None and num_iterations > 0:
-            self.len_pos_pairs = num_iterations * len(self.sentences)
-            self.len_neg_pairs = num_iterations * len(self.sentences)
-
-        elif sampling_strategy == "unique":
-            self.len_pos_pairs = len(self.pos_pairs)
-            self.len_neg_pairs = len(self.neg_pairs)
-
-        elif sampling_strategy == "undersampling":
-            self.len_pos_pairs = min(len(self.pos_pairs), len(self.neg_pairs))
-            self.len_neg_pairs = min(len(self.pos_pairs), len(self.neg_pairs))
-
-        elif sampling_strategy == "oversampling":
-            self.len_pos_pairs = max(len(self.pos_pairs), len(self.neg_pairs))
-            self.len_neg_pairs = max(len(self.pos_pairs), len(self.neg_pairs))
-
-        else:
-            raise ValueError("Invalid sampling strategy. Must be one of 'unique', 'oversampling', or 'undersampling'.")
-
-
-    def generate_pairs(self) -> None:
-        for (_text, _span, _label), (text, span, label) in shuffle_combinations(self.sentence_labels):
-            is_positive = _label == label
-            is_positive_full = self.max_pos_or_neg != -1 and len(self.pos_pairs) >= self.max_pos_or_neg
-            is_negative_full = self.max_pos_or_neg != -1 and len(self.neg_pairs) >= self.max_pos_or_neg
-
-            if is_positive:
-                if not is_positive_full:
-                    self.pos_pairs.append({"sentence_1": _text, "span_1": _span, "sentence_2": text, "span_2": span, "label": 1.0})
-            elif not is_negative_full:
-                self.neg_pairs.append({"sentence_1": _text, "span_1": _span, "sentence_2": text, "span_2": span, "label": 0.0})
-
-            if is_positive_full and is_negative_full:
-                break
-
-    def generate_multilabel_pairs(self) -> None:
-        for (_text, _span, _label), (text, span, label) in shuffle_combinations(self.sentence_labels):
-            # logical_and checks if labels are both set for each class
-            is_positive = any(np.logical_and(_label, label))
-            is_positive_full = self.max_pos_or_neg != -1 and len(self.pos_pairs) >= self.max_pos_or_neg
-            is_negative_full = self.max_pos_or_neg != -1 and len(self.neg_pairs) >= self.max_pos_or_neg
-
-            if is_positive:
-                if not is_positive_full:
-                    self.pos_pairs.append({"sentence_1": _text, "span_1": _span, "sentence_2": text, "span_2": span, "label": 1.0})
-            elif not is_negative_full:
-                self.neg_pairs.append({"sentence_1": _text, "span_1": _span, "sentence_2": text, "span_2": span, "label": 0.0})
-
-            if is_positive_full and is_negative_full:
-                break
-
-
-class SetFitDatasetForSpanClassification(TorchDataset):
-    """SetFitDatasetForSpanClassification
-
-    A dataset for training the differentiable head on span classification.
-
-    Args:
-        x (`List[Tuple[str, Tuple[int, int]]]`):
-            A list of input data as tuples of texts and span start and end character positions that will be fed into `SetFitModel`.
-        y (`Union[List[int], List[List[int]]]`):
-            A list of input data's labels. Can be a nested list for multi-label classification.
-        tokenizer (`PreTrainedTokenizerBase`):
-            The tokenizer from `SetFitModel`'s body.
-        max_length (`int`, defaults to `32`):
-            The maximum token length a tokenizer can generate.
-            Will pad or truncate tokens when the number of tokens for a text is either smaller or larger than this value.
-    """
-
-    def __init__(
-        self,
-        x: List[Tuple[str, Tuple[int, int]]],
-        y: Union[List[int], List[List[int]]],
-        tokenizer: "PreTrainedTokenizerBase",
-        max_length: int = 32,
-    ) -> None:
-        assert len(x) == len(y)
-
-        # TODO (maybe): use _process_inputs to extract text and span from input
-        self.sentences, self.spans = _process_span_inputs(x)
-        self.y = y
-        self.tokenizer = tokenizer
-        self.max_length = max_length
-
-    def __len__(self) -> int:
-        return len(self.sentences)
-
-    def __getitem__(self, idx: int) -> Tuple[TokenizerOutput, Union[int, List[int]]]:
-        label = self.y[idx]
-
-        feature = self.tokenizer(
-            self.sentences[idx],
-            max_length=self.max_length,
-            padding="max_length",
-            truncation=True,
-            return_attention_mask="attention_mask" in self.tokenizer.model_input_names,
-            return_token_type_ids="token_type_ids" in self.tokenizer.model_input_names,
-            return_offsets_mapping=True, # <== added to get tokens character locations
-        )
-        # iterate over tokenized inputs and flag locations of spans
-        span = self.spans[idx]
-        span_mask = [0]*len(feature['input_ids'])
-        inside = False
-        for t, (om, am) in enumerate(zip(feature['offset_mapping'], feature['attention_mask'])):
-            if am == 0:
-                break
-            if span[0] in range(*om) and not inside:
-                span_mask[t] = 1
-                inside = True
-            elif span[1]-1 in range(*om) and inside:
-                span_mask[t] = 1
-                inside = False
-            elif inside:
-                span_mask[t] = 1
-        feature.update({'span_mask': span_mask})
-
-        del feature['offset_mapping']
-
-        return feature, label
-
-    def collate_fn(self, batch):
-        features = {input_name: [] for input_name in self.tokenizer.model_input_names + ['span_mask']}
-
-        labels = []
-        for feature, label in batch:
-            features["input_ids"].append(feature["input_ids"])
-            if "attention_mask" in features:
-                features["attention_mask"].append(feature["attention_mask"])
-            if "token_type_ids" in features:
-                features["token_type_ids"].append(feature["token_type_ids"])
-            if "span_mask" in features:
-                features["span_mask"].append(feature["span_mask"])
-            labels.append(label)
-
-        # convert to tensors
-        features = {k: torch.Tensor(v).int() for k, v in features.items()}
-        labels = torch.Tensor(labels)
-        labels = labels.long() if len(labels.size()) == 1 else labels.float()
-        return features, labels
-
-
-class SetFitModelForSpanClassification(SetFitModel):
-    def _prepare_dataloader(
-            self,
-            x_train: List[str],
-            y_train: Union[List[int], List[List[int]]],
-            batch_size: Optional[int] = None,
-            max_length: Optional[int] = None,
-            shuffle: bool = True,
-        ) -> DataLoader:
-            max_acceptable_length = self.model_body.get_max_seq_length()
-            if max_length is None:
-                max_length = max_acceptable_length
-                logger.warning(
-                    f"The `max_length` is `None`. Using the maximum acceptable length according to the current model body: {max_length}."
-                )
-
-            if max_length > max_acceptable_length:
-                logger.warning(
-                    (
-                        f"The specified `max_length`: {max_length} is greater than the maximum length of the current model body: {max_acceptable_length}. "
-                        f"Using {max_acceptable_length} instead."
-                    )
-                )
-                max_length = max_acceptable_length
-
-            dataset = SetFitDatasetForSpanClassification(
-                x_train,
-                y_train,
-                tokenizer=self.model_body.tokenizer,
-                max_length=max_length,
-            )
-            dataloader = DataLoader(
-                dataset,
-                batch_size=batch_size,
-                collate_fn=dataset.collate_fn,
-                shuffle=shuffle,
-                pin_memory=True,
-            )
-
-            return dataloader
-    
-    # TODO: predict method
