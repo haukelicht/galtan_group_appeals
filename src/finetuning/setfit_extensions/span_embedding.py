@@ -720,8 +720,8 @@ class SetFitModelForSpanClassification(SetFitModelWithEarlyStopping):
 
             return dataloader
     
+    @staticmethod
     def _normalize_inputs(
-        self,
         inputs: Optional[List[InputItem]] = None,
         *,
         texts: Optional[List[Text]] = None,
@@ -816,8 +816,8 @@ class SetFitModelForSpanClassification(SetFitModelWithEarlyStopping):
         return super().predict_proba(norm_inputs, **kwargs)
 
 
-from src.finetuning.setfit_extensions.early_stopping import EarlyStoppingTrainer
-class SetFitTrainerForSpanClassification(EarlyStoppingTrainer, SpanColumnMappingMixin):
+from src.finetuning.setfit_extensions.early_stopping import SetFitEarlyStoppingTrainer
+class SetFitTrainerForSpanClassification(SetFitEarlyStoppingTrainer, SpanColumnMappingMixin):
 
     def __init__(self, *args, **kwargs):
 

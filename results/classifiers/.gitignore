@@ -1,0 +1,4 @@
+**/*.log
+**/command.txt
+**/finetuning.cmd
+**/*_predictions.pkl

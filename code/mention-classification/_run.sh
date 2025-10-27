@@ -2,12 +2,16 @@
 
 CONDAENV=$(conda info | grep "active environment" | awk '{print $NF}')
 
-if [[ "$CONDAENV" != "parl_speech_actors" ]]; then
-    echo "Error: Active environment is not 'parl_speech_actors'."
+if [[ "$CONDAENV" != "galtan_group_appeals" ]]; then
+    echo "Error: Active environment is not 'galtan_group_appeals'."
     exit 1
 fi
 
 mkdir -p logs
 
-# run in background
-nohup ./run_mention_pair_classification_workflow_ollama.sh > "logs/mention_pair_classification_workflow_$(date '+%Y-%m-%dT%H:%M:%S').log" 2>&1 &
+# nohup ./mention-attribute-dimension-classification_setfit_model-selection.sh > "logs/mention_attribute_dimension_classification.log" 2>&1 &
+# nohup ./mention-economic-attributes-classification_setfit_model-selection.sh > "logs/mention_economic_attributes_classification.log" 2>&1 &
+# nohup ./mention-noneconomic-attributes-classification_setfit_model-selection.sh > "logs/mention_noneconomic_attributes_classification.log" 2>&1 &
+
+
+# nohup ./run_mention_pair_classification_workflow_ollama.sh > "logs/mention_pair_classification_workflow_$(date '+%Y-%m-%dT%H:%M:%S').log" 2>&1 &

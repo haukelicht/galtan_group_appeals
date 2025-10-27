@@ -3,37 +3,91 @@ import numpy as np
 import torch
 from torch import nn
 from setfit import SetFitHead
-from typing import List, Dict, Optional, Union
+from typing import List, Dict, Optional, Union, Literal
 from numpy._typing import NDArray
 
-def compute_class_weights(x: Union[List[Union[int, str]], NDArray, torch.Tensor], multitarget: bool=False) -> NDArray:
+def compute_class_weights(
+        x: Union[List[Union[int, str]], NDArray, torch.Tensor], 
+        multitarget: bool=False,
+        smooth_weights: bool=False,
+        smooth_exponent: float=0.5,
+    ) -> NDArray:
     """Compute class weights from target labels.
-    
+
+    The function computes class weights inversely proportional to the frequency of positive instances for each class. 
+    For multitarget classification, it assumes that the target labels are binary indicators (0/1) for each class.
+
     Args:
         x (Union[List[Union[int, str]], NDArray, torch.Tensor]):
             The target labels. For multitarget, shape should be (num_samples, num_targets).
         multitarget (bool, defaults to `False`):
             Whether to compute class weights for multitarget classification.
+        smooth_weights (bool, defaults to `False`):
+            Whether to apply smoothing to the computed class weights.
+            If set to `True`, the weights will be smoothed with the root function, i.e., using the formula:
+            `w_smooth = w ** smooth_exponent`.
+        smooth_exponent (float, defaults to `0.5`):
+            The exponent used for smoothing the class weights if `smooth_weights` is `True`.
+            A value must in [0.0, 1.0].
+            A value of 1 will result in no smoothing (i.e., uniform weights across classes).
+            A value of 0.5 will apply square root smoothing.
+            A value of 0 will switch off smoothing and keep weights as-is.
+
+    Returns:
+        NDArray:
+            The computed class weights.
     """
+    # --- input to numpy ---
     if isinstance(x, torch.Tensor):
-        x = x.cpu().numpy()
+        x = x.detach().cpu().numpy()
     x = np.array(x)
 
-    if not multitarget: assert x.ndim == 1, 'if multitarget=False, x.ndim must be 1'
-    if multitarget: assert x.ndim == 2, 'if multitarget=True, x.ndim must be 2'
-
+    # --- basic checks ---
+    if x.size == 0:
+        raise ValueError("x is empty")
     if multitarget:
-        # assume that multitarget feature indicators can only be True/False, i.e., 0/1
-        w = x.sum()/x.sum(axis=0)
-        w /= w.sum()
-        return w
+        if x.ndim != 2:
+            raise ValueError("if multitarget=True, x.ndim must be 2")
+        if not np.issubdtype(x.dtype, np.number):
+            raise ValueError("multi-label x must be numeric (0/1)")
     else:
-        _, cnts = np.unique(x, return_counts=True)
-        w = sum(cnts)/cnts
-        w /= w.sum()
-        return w
+        if x.ndim != 1:
+            raise ValueError("if multitarget=False, x.ndim must be 1")
 
+    if smooth_weights and not (0.0 <= smooth_exponent <= 1.0):
+        raise ValueError("smooth_exponent must be in [0.0, 1.0]")
 
+    # helper: apply smoothing exponent; alpha=0 -> ones; alpha=1 -> identity
+    def _temper(w: NDArray) -> NDArray:
+        if not smooth_weights:
+            return w
+        if smooth_exponent == 0.0:
+            return np.ones_like(w, dtype=float)
+        return w.astype(float) ** float(smooth_exponent)
+
+    # --- multi-label ---
+    if multitarget:
+        prevs = x.mean(axis=0).astype(float)  # p_k
+        eps = 1e-12
+        prevs = np.clip(prevs, eps, 1 - eps)
+        w = (1.0 - prevs) / prevs              # (neg:pos)
+        w = _temper(w)                         # ((1-p)/p)^alpha
+        return w.astype(np.float64)
+
+    # --- single-label ---
+    classes, cnts = np.unique(x, return_counts=True)
+    if len(classes)<2:
+        raise ValueError("binary_bce requires exactly 2 classes in single-label targets.")
+
+    freqs = cnts.astype(float) / cnts.sum()    # p_k
+    eps = 1e-12
+    freqs = np.clip(freqs, eps, 1.0)
+
+    w = 1.0 / freqs
+    w = _temper(w)
+    w = w * (w.size / w.sum())
+    return w.astype(np.float64)
+    
 
 class SetFitHeadWithClassWeights(SetFitHead):
     """
@@ -65,13 +119,29 @@ class SetFitHeadWithClassWeights(SetFitHead):
         class_weights: Optional[Union[List[float], NDArray]] = None,
         **kwargs
     ) -> None:
-        super(SetFitHeadWithClassWeights, self).__init__(**kwargs)
-        
-        if len(class_weights) != self.out_features:
-            raise ValueError('length of `class_weights` must be same as `out_features`')
-        
-        self.class_weights = torch.tensor(class_weights, dtype=self.linear.weight.dtype).to(self._device)
+        super().__init__(**kwargs)
 
+        if class_weights is None:
+            # No class weighting
+            self.class_weights = None
+            return
+
+        # Convert safely to a FLOAT tensor on the correct device
+        # (avoid passing a Python list/sequence to PyTorch loss)
+        w = torch.as_tensor(class_weights, dtype=torch.float32)
+        if w.ndim != 1:
+            raise ValueError("`class_weights` must be 1D (length = out_features).")
+
+        if w.numel() != self.out_features:
+            raise ValueError(
+                f"length of `class_weights` ({w.numel()}) must equal `out_features` ({self.out_features})"
+            )
+
+        # Move to same device/dtype as the linear layer
+        w = w.to(device=self.linear.weight.device, dtype=self.linear.weight.dtype)
+
+        # Register as a buffer so it follows .to(device), DDP, etc.
+        self.register_buffer("class_weights", w, persistent=False)
 
     def get_loss_fn(self) -> nn.Module:
         if self.multitarget:  # if sigmoid output

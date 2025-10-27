@@ -309,12 +309,12 @@ def _prepare_multilabel_metrics_fn(p: PredictionOutput):
     y_test = labels
     return y_pred, y_test
 
-class EarlyStoppingTrainer(Trainer):
+class SetFitEarlyStoppingTrainer(Trainer):
 
     def __init__(
         self,
         model: Optional["SetFitModel"] = None,
-        args: Optional[TrainingArguments] = None,
+        args: Optional[Union[TrainingArguments, EarlyStoppingTrainingArguments]] = None,
         train_dataset: Optional["Dataset"] = None,
         eval_dataset: Optional["Dataset"] = None,
         model_init: Optional[Callable[[], "SetFitModel"]] = None,
@@ -324,25 +324,9 @@ class EarlyStoppingTrainer(Trainer):
         column_mapping: Optional[Dict[str, str]] = None,
         compute_metrics: Optional[Callable] = None,
     ) -> None:
-        old_callbacks = deepcopy(callbacks)
-        
-        # remove duplicate early stopping callback, from sentence transformer trainer, if any
-        if sum(isinstance(c, EarlyStoppingCallback) for c in callbacks) > 1:
-            new_callbacks = []
-            surplus_eac = False
-            while len(callbacks)>0:
-                cb = callbacks.pop()
-                if not isinstance(cb, EarlyStoppingCallback):
-                    new_callbacks.append(cb)
-                elif not surplus_eac:
-                    new_callbacks.append(cb)
-                    surplus_eac = True
-                else:
-                    pass
-            new_callbacks
-        else:
-            new_callbacks = deepcopy(old_callbacks)
-        
+
+        new_callbacks, head_early_stopping_callback = self.parse_callbacks(callbacks)
+
         super().__init__(
             model=model,
             args=args,
@@ -355,7 +339,10 @@ class EarlyStoppingTrainer(Trainer):
             column_mapping=column_mapping,
         )
 
-        self._callbacks = deepcopy(old_callbacks)
+        # TODO: verify that this works as intended
+        self.model.head_early_stopping_callback = head_early_stopping_callback
+        
+        # setup the metric computation function
         if isinstance(compute_metrics, Callable):
             self._compute_metrics = compute_metrics
         elif isinstance(self.metric, str):
@@ -381,6 +368,32 @@ class EarlyStoppingTrainer(Trainer):
         else:
             self._compute_metrics = None
 
+    def parse_callbacks(self, callbacks: Optional[List[TrainerCallback]]):
+        # remove duplicate early stopping callback, from sentence transformer trainer, if any
+        # NOTE: this ensures that the callbacks provided to init the sentence transformer trainer inside setfit trainer do not contain multiple early stopping callbacks (which would lead to errors)
+        
+        early_stopping_callbacks = [c for c in callbacks if isinstance(c, EarlyStoppingCallback)] if callbacks is not None else []
+        head_early_stopping_callback = None
+        if len(early_stopping_callbacks) < 2:
+            return callbacks, head_early_stopping_callback
+        
+        new_callbacks = []
+        surplus_eac = False
+        for cb in callbacks:
+            # cb = callbacks.pop()
+            if not isinstance(cb, EarlyStoppingCallback):
+                new_callbacks.append(cb)
+            elif not surplus_eac:
+                new_callbacks.append(cb)
+                surplus_eac = True
+            elif not head_early_stopping_callback:
+                head_early_stopping_callback = cb
+            else:
+                # skip surplus early stopping callbacks
+                # TODO: warn?
+                pass
+        return new_callbacks, head_early_stopping_callback
+        
     @property
     def args(self) -> Union[TrainingArguments, EarlyStoppingTrainingArguments]:
         return self._args
@@ -406,10 +419,9 @@ class EarlyStoppingTrainer(Trainer):
         if hasattr(self, "st_trainer"):
             self.st_trainer.setfit_model = model
 
-        
     def train(
         self,
-        args: Optional[TrainingArguments] = None,
+        args: Optional[Union[TrainingArguments, EarlyStoppingTrainingArguments]] = None,
         trial: Optional[Union["optuna.Trial", Dict[str, Any]]] = None,
         **kwargs,
     ) -> None:
@@ -425,7 +437,7 @@ class EarlyStoppingTrainer(Trainer):
         if len(kwargs):
             warnings.warn(
                 f"`{self.__class__.__name__}.train` does not accept keyword arguments anymore. "
-                f"Please provide training arguments via a `TrainingArguments` instance to the `{self.__class__.__name__}` "
+                f"Please provide training arguments via a `TrainingArguments` or `EarlyStoppingTrainingArguments` instance to the `{self.__class__.__name__}` "
                 f"initialisation or the `{self.__class__.__name__}.train` method.",
                 DeprecationWarning,
                 stacklevel=2,
@@ -446,7 +458,13 @@ class EarlyStoppingTrainer(Trainer):
             train_parameters + self.dataset_to_parameters(self.eval_dataset) if self.eval_dataset else train_parameters
         )
 
-        self.train_embeddings(*full_parameters, args=args)
+        # NOTE: allow no training of body when num_epochs[0] <=0 or max_steps <=0
+        if args.num_epochs[0] <= 0:
+            warnings.warn("Skipping body training step because `num_epochs[0]` is set to 0 or less.")
+        elif args.max_steps <= 0:
+            warnings.warn("Skipping body training step because `max_steps` is set to 0 or less.")
+        else:
+            self.train_embeddings(*full_parameters, args=args)
         self.train_classifier(*full_parameters, args=args) # NOTE: also pass eval x and y to classifier training
     
     def train_embeddings(
@@ -455,9 +473,10 @@ class EarlyStoppingTrainer(Trainer):
         y_train: Optional[Union[List[int], List[List[int]]]] = None,
         x_eval: Optional[List[str]] = None,
         y_eval: Optional[Union[List[int], List[List[int]]]] = None,
-        args: Optional[TrainingArguments] = None,
+        args: Optional[Union[TrainingArguments, EarlyStoppingTrainingArguments]] = None,
     ):
         args = deepcopy(args)
+        # TODO: seee if needing to get fiorst early stopping callback frpom args here
         if isinstance(args.metric_for_best_model, tuple):
             args.metric_for_best_model = args.metric_for_best_model[0]
         if isinstance(args.greater_is_better, tuple):
@@ -470,7 +489,7 @@ class EarlyStoppingTrainer(Trainer):
         y_train: Optional[Union[List[int], List[List[int]]]] = None,
         x_eval: Optional[List[str]] = None,
         y_eval: Optional[Union[List[int], List[List[int]]]] = None,
-        args: Optional[TrainingArguments] = None,
+        args: Optional[Union[TrainingArguments, EarlyStoppingTrainingArguments]] = None,
     ):
         args = deepcopy(args)
         if isinstance(self.model, SetFitModelWithEarlyStopping):
@@ -487,10 +506,11 @@ class EarlyStoppingTrainer(Trainer):
                 early_stopping_kwargs["metric_for_best_model"] = "loss"
                 early_stopping_kwargs["greater_is_better"] = False
 
-            if any(isinstance(c, EarlyStoppingCallback) for c in self._callbacks):
-                cb = [c for c in self._callbacks if isinstance(c, EarlyStoppingCallback)][-1]
-                early_stopping_kwargs["early_stopping_patience"] = cb.early_stopping_patience
-                early_stopping_kwargs["early_stopping_threshold"] = cb.early_stopping_threshold
+            #if any(isinstance(c, EarlyStoppingCallback) for c in self._callbacks):
+            #    cb = [c for c in self._callbacks if isinstance(c, EarlyStoppingCallback)][-1]
+            if hasattr(self.model, "head_early_stopping_callback") and self.model.head_early_stopping_callback is not None:
+                early_stopping_kwargs["early_stopping_patience"] = self.model.head_early_stopping_callback.early_stopping_patience
+                early_stopping_kwargs["early_stopping_threshold"] = self.model.head_early_stopping_callback.early_stopping_threshold
             early_stopping_kwargs["compute_metrics"] = self._compute_metrics
 
             self.model.fit(

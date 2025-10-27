@@ -7,15 +7,16 @@ stanza # ==1.6.1
 #spacy==3.8.5
 gensim==4.3.2
 matplotlib==3.9.2
+seaborn==0.13.2
 scikit-learn==1.4.2
 scikit-multilearn==0.2.0
 torch # ~=2.0.1
 # accelerate==0.34.2
 # datasets==2.20.0
 # sentencepiece
-# tokenizers==0.20.1
+tokenizers==0.22.1
 huggingface_hub==0.35.3
-transformers==4.50.3
+transformers=4.57.1
 sentence-transformers==4.0.0
 setfit[absa]
 seqeval==1.2.2
