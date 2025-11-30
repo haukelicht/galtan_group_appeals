@@ -1,31 +1,41 @@
+import inspect
 import numpy as np
 from torch import nn
 
 import torch
-from setfit import SetFitModel
-from setfit import Trainer, TrainingArguments
+from setfit import SetFitModel, Trainer, TrainingArguments
 
 from datasets import Dataset
 from transformers.trainer_callback import TrainerCallback
-from transformers.trainer_utils import PredictionOutput
+from transformers.trainer_utils import set_seed, PredictionOutput
 from transformers import EarlyStoppingCallback
 try:
     import optuna
+    from transformers.trainer_utils import HPSearchBackend
 except:
     pass
 
 from tqdm import tqdm, trange
 import warnings
 
-from dataclasses import dataclass
-from copy import deepcopy
+from copy import copy, deepcopy
+import inspect
+from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Union, Callable, Any, Tuple
 
+from setfit import logging
+logging.set_verbosity_info()
+logger = logging.get_logger(__name__)
 
 class SetFitModelWithEarlyStopping(SetFitModel):
     """
     A SetFit model with early stopping functionality.
     """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.head_log_history: Optional[List[Dict[str, float]]] = None
+    
     def fit(
         self,
         x_train: List[str],
@@ -92,6 +102,7 @@ class SetFitModelWithEarlyStopping(SetFitModel):
             best_metric = float("-inf") if greater_is_better else float("inf")
             best_model_state = {"epoch": None, "body": None, "head": None}
             no_improvement_count = 0
+            self.head_log_history = self.head_log_history if self.head_log_history is not None else []
 
             for epoch_idx in trange(num_epochs, desc="Epoch", disable=not show_progress_bar):
                 # Training loop - existing code
@@ -123,11 +134,13 @@ class SetFitModelWithEarlyStopping(SetFitModel):
                 
                 # Calculate epoch average loss
                 epoch_avg_loss = epoch_loss / max(1, num_batches)
-                
+                self.head_log_history.append({"epoch": epoch_idx + 1, "train_loss": epoch_avg_loss})
+
                 # Validation and early stopping logic
                 if x_eval is not None and y_eval is not None and early_stopping_patience is not None:
-                    print(f"Epoch {epoch_idx + 1}: calculating validation {metric_for_best_model} for early stopping")
-                    val_metric = self._compute_eval_metric(eval_dataloader, metric_for_best_model, compute_metrics, epoch_avg_loss, show_progress_bar)
+                    val_metric, greater_is_better, metrics = self._compute_eval_metric(eval_dataloader, metric_for_best_model, greater_is_better, compute_metrics, epoch_avg_loss, "eval", show_progress_bar)
+                    self.head_log_history[-1].update(metrics)
+                    print(self.head_log_history[-1])
                     
                     improved = \
                         (greater_is_better and val_metric > (best_metric + early_stopping_threshold)) or \
@@ -192,10 +205,24 @@ class SetFitModelWithEarlyStopping(SetFitModel):
                         self.labels = classes.tolist()
                 except Exception:
                     pass
+
+    def _reset_head_log_history(self):
+        self.head_log_history = None
     
-    def _compute_eval_metric(self, eval_dataloader, metric_name, compute_metrics, train_loss: float, show_progress_bar=True):
+    def _compute_eval_metric(self, eval_dataloader, metric_name, greater_is_better, compute_metrics, train_loss: float, metric_prefix="eval", show_progress_bar=True):
         """
-        Compute the validation metric for early stopping.
+        Compute the validation metrics for early stopping.
+
+        Args:
+            eval_dataloader: DataLoader for the evaluation dataset.
+            metric_name: The name of the metric to compute.
+            greater_is_better: Whether higher values of the metric indicate better models.
+            compute_metrics: A callable to compute additional metrics.
+            train_loss: The training loss to include in the metrics.
+            metric_prefix: Prefix for the metric names.
+            show_progress_bar: Whether to show a progress bar during evaluation.
+        Returns:
+            The computed validation metric and a dictionary of all metrics.
         """
         self.model_body.eval()
         self.model_head.eval()
@@ -228,11 +255,11 @@ class SetFitModelWithEarlyStopping(SetFitModel):
         val_avg_loss = val_loss / max(1, num_batches)
         
         val_metric = val_avg_loss
-        metrics = {'training loss': train_loss, 'validation loss': val_avg_loss}
+        metrics = {}
         if compute_metrics is not None:
             logits = np.concatenate(all_logits, axis=0)
             p = PredictionOutput(predictions=logits, label_ids=np.array(all_labels), metrics=None)
-            metrics.update(compute_metrics(p))
+            metrics = compute_metrics(p) # NOTE: overwrite empty metrics dict
             if metric_name in metrics:
                 val_metric = metrics[metric_name]
             else:
@@ -241,10 +268,13 @@ class SetFitModelWithEarlyStopping(SetFitModel):
                     f"Using validation loss as fallback",
                     stacklevel=2,
                 )
-        # report # TODO: make use of transformers eval loop reporting utils
-        print(metrics)
-            
-        return val_metric
+                greater_is_better = False  # for loss
+        metrics = {
+            "train_loss": train_loss, 
+            f"{metric_prefix}_loss" if metric_prefix else "validation_loss": val_avg_loss, 
+            **{f"{metric_prefix}_{k}" if metric_prefix else k: v for k, v in metrics.items()}
+        }
+        return val_metric, greater_is_better, metrics
     
     # just for convenience
     def predict_logits(
@@ -286,8 +316,40 @@ class SetFitModelWithEarlyStopping(SetFitModel):
 
 @dataclass
 class EarlyStoppingTrainingArguments(TrainingArguments):
-    metric_for_best_model: Optional[Tuple[str, str]] = ('embedding_loss', 'loss')
-    greater_is_better: Tuple[bool, bool] = (False, False)
+    metric_for_best_model: Optional[Tuple[str, ...]] = field(default=('embedding_loss', 'loss'), repr=True)
+    greater_is_better: Tuple[bool, ...] = field(default=(False, False), repr=True)
+
+    def __post_init__(self):
+        super().__post_init__()
+        
+        if isinstance(self.metric_for_best_model, str):
+            self.metric_for_best_model = (self.metric_for_best_model,)
+        if isinstance(self.greater_is_better, bool):
+            self.greater_is_better = (self.greater_is_better,)
+
+    def update(self, arguments: Dict[str, Any], ignore_extra: bool = False) -> "EarlyStoppingTrainingArguments":
+        return EarlyStoppingTrainingArguments.from_dict({**self.to_dict(), **arguments}, ignore_extra=ignore_extra)
+
+    @classmethod
+    def from_dict(cls, arguments: Dict[str, Any], ignore_extra: bool = False) -> "EarlyStoppingTrainingArguments":
+        """Initialize a EarlyStoppingTrainingArguments instance from a dictionary.
+
+        Args:
+            arguments (`Dict[str, Any]`): A dictionary of arguments.
+            ignore_extra (`bool`, *optional*): Whether to ignore arguments that do not occur in the
+                EarlyStoppingTrainingArguments __init__ signature. Defaults to False.
+
+        Returns:
+            `EarlyStoppingTrainingArguments`: The instantiated EarlyStoppingTrainingArguments instance.
+        """
+        if ignore_extra:
+            return cls(**{key: value for key, value in arguments.items() if key in inspect.signature(cls).parameters})
+        return cls(**arguments)
+    
+    def copy(self) -> "EarlyStoppingTrainingArguments":
+        """Create a shallow copy of this EarlyStoppingTrainingArguments instance."""
+        return copy(self)
+
 
 # define helper function that precomputes logits and label_ids to format (`y_pred`, `y_test`) required by setfit trainers' `metric` argument
 def _prepare_singlelabel_metrics_fn(p: PredictionOutput):
@@ -324,12 +386,14 @@ class SetFitEarlyStoppingTrainer(Trainer):
         column_mapping: Optional[Dict[str, str]] = None,
         compute_metrics: Optional[Callable] = None,
     ) -> None:
+        
+        # parse callbacks to separate head early stopping callback (if any)
+        new_callbacks, head_early_stopping_callback = self._parse_callbacks(callbacks)
 
-        new_callbacks, head_early_stopping_callback = self.parse_callbacks(callbacks)
-
+        # initialize base class
         super().__init__(
             model=model,
-            args=args,
+            args=self._to_setfit_train_args(args),
             train_dataset=train_dataset,
             eval_dataset=eval_dataset,
             model_init=model_init,
@@ -338,10 +402,44 @@ class SetFitEarlyStoppingTrainer(Trainer):
             callbacks=new_callbacks,
             column_mapping=column_mapping,
         )
-
-        # TODO: verify that this works as intended
+        
+        # set args and model using the property setters to ensure consistency
+        self.args = args
+        
+        # add an attribute to the model to store the head early stopping callback (if any)
         self.model.head_early_stopping_callback = head_early_stopping_callback
         
+        # set compute metrics function
+        self._set_compute_metrics(compute_metrics)
+
+    @staticmethod
+    def _parse_callbacks(callbacks: Optional[List[TrainerCallback]]):
+        # remove duplicate early stopping callback, from sentence transformer trainer, if any
+        # NOTE: this ensures that the callbacks provided to init the sentence transformer trainer inside setfit trainer do not contain multiple early stopping callbacks (which would lead to errors)
+        
+        early_stopping_callbacks = [c for c in callbacks if isinstance(c, EarlyStoppingCallback)] if callbacks is not None else []
+        head_early_stopping_callback = None
+        if len(early_stopping_callbacks) < 2:
+            return callbacks, head_early_stopping_callback
+        
+        new_callbacks = []
+        surplus_eac = False
+        for cb in callbacks:
+            # cb = callbacks.pop()
+            if not isinstance(cb, EarlyStoppingCallback):
+                new_callbacks.append(cb)
+            elif not surplus_eac:
+                new_callbacks.append(cb)
+                surplus_eac = True
+            elif not head_early_stopping_callback:
+                head_early_stopping_callback = cb
+            else:
+                # skip surplus early stopping callbacks
+                # TODO: warn?
+                pass
+        return new_callbacks, head_early_stopping_callback
+    
+    def _set_compute_metrics(self, compute_metrics: Optional[Callable]=None) -> None:
         # setup the metric computation function
         if isinstance(compute_metrics, Callable):
             self._compute_metrics = compute_metrics
@@ -368,32 +466,15 @@ class SetFitEarlyStoppingTrainer(Trainer):
         else:
             self._compute_metrics = None
 
-    def parse_callbacks(self, callbacks: Optional[List[TrainerCallback]]):
-        # remove duplicate early stopping callback, from sentence transformer trainer, if any
-        # NOTE: this ensures that the callbacks provided to init the sentence transformer trainer inside setfit trainer do not contain multiple early stopping callbacks (which would lead to errors)
-        
-        early_stopping_callbacks = [c for c in callbacks if isinstance(c, EarlyStoppingCallback)] if callbacks is not None else []
-        head_early_stopping_callback = None
-        if len(early_stopping_callbacks) < 2:
-            return callbacks, head_early_stopping_callback
-        
-        new_callbacks = []
-        surplus_eac = False
-        for cb in callbacks:
-            # cb = callbacks.pop()
-            if not isinstance(cb, EarlyStoppingCallback):
-                new_callbacks.append(cb)
-            elif not surplus_eac:
-                new_callbacks.append(cb)
-                surplus_eac = True
-            elif not head_early_stopping_callback:
-                head_early_stopping_callback = cb
-            else:
-                # skip surplus early stopping callbacks
-                # TODO: warn?
-                pass
-        return new_callbacks, head_early_stopping_callback
-        
+    @staticmethod
+    def _to_setfit_train_args(args: Union[TrainingArguments, EarlyStoppingTrainingArguments]):
+        sf_args = TrainingArguments(**(args.to_dict() if args else {}))
+        if isinstance(sf_args.metric_for_best_model, tuple):
+            sf_args.metric_for_best_model = sf_args.metric_for_best_model[0]
+        if isinstance(sf_args.greater_is_better, tuple):
+            sf_args.greater_is_better = sf_args.greater_is_better[0]
+        return sf_args
+    
     @property
     def args(self) -> Union[TrainingArguments, EarlyStoppingTrainingArguments]:
         return self._args
@@ -402,12 +483,7 @@ class SetFitEarlyStoppingTrainer(Trainer):
     def args(self, args: Union[TrainingArguments, EarlyStoppingTrainingArguments]) -> None:
         self._args = args
         if hasattr(self, "st_trainer"):
-            if isinstance(args, EarlyStoppingTrainingArguments):
-                if isinstance(args.metric_for_best_model, tuple):
-                    args.metric_for_best_model = args.metric_for_best_model[0]
-                if isinstance(args.greater_is_better, tuple):
-                    args.greater_is_better = args.greater_is_better[0]
-            self.st_trainer.setfit_args = args
+            self.st_trainer.setfit_args = self._to_setfit_train_args(args)
 
     @property
     def model(self) -> Union["SetFitModel", "SetFitModelWithEarlyStopping"]:
@@ -419,6 +495,7 @@ class SetFitEarlyStoppingTrainer(Trainer):
         if hasattr(self, "st_trainer"):
             self.st_trainer.setfit_model = model
 
+    
     def train(
         self,
         args: Optional[Union[TrainingArguments, EarlyStoppingTrainingArguments]] = None,
@@ -465,7 +542,9 @@ class SetFitEarlyStoppingTrainer(Trainer):
             warnings.warn("Skipping body training step because `max_steps` is set to 0 or less.")
         else:
             self.train_embeddings(*full_parameters, args=args)
-        self.train_classifier(*full_parameters, args=args) # NOTE: also pass eval x and y to classifier training
+        
+        # NOTE: also passing eval X and y to classifier for training (in vanilla setfit trainer these where not passed and only *train_parameters used)
+        self.train_classifier(*full_parameters, args=args)
     
     def train_embeddings(
         self,
@@ -475,14 +554,13 @@ class SetFitEarlyStoppingTrainer(Trainer):
         y_eval: Optional[Union[List[int], List[List[int]]]] = None,
         args: Optional[Union[TrainingArguments, EarlyStoppingTrainingArguments]] = None,
     ):
-        args = deepcopy(args)
-        # TODO: seee if needing to get fiorst early stopping callback frpom args here
-        if isinstance(args.metric_for_best_model, tuple):
-            args.metric_for_best_model = args.metric_for_best_model[0]
-        if isinstance(args.greater_is_better, tuple):
-            args.greater_is_better = args.greater_is_better[0]
-        super().train_embeddings(x_train, y_train, x_eval, y_eval, args)
-
+        st_args = deepcopy(args)
+        if st_args and hasattr(st_args, "metric_for_best_model") and isinstance(st_args.metric_for_best_model, tuple):
+            st_args.metric_for_best_model = st_args.metric_for_best_model[0]
+        if st_args and hasattr(st_args, "greater_is_better") and isinstance(st_args.greater_is_better, tuple):
+            st_args.greater_is_better = st_args.greater_is_better[0]
+        super().train_embeddings(x_train, y_train, x_eval, y_eval, st_args)
+        
     def train_classifier(
         self,
         x_train: List[str],
@@ -491,7 +569,16 @@ class SetFitEarlyStoppingTrainer(Trainer):
         y_eval: Optional[Union[List[int], List[List[int]]]] = None,
         args: Optional[Union[TrainingArguments, EarlyStoppingTrainingArguments]] = None,
     ):
-        args = deepcopy(args)
+        shared_args = {
+            "num_epochs": args.classifier_num_epochs,
+            "batch_size": args.classifier_batch_size,
+            "body_learning_rate": args.body_classifier_learning_rate,
+            "head_learning_rate": args.head_learning_rate,
+            "l2_weight": args.l2_weight,
+            "max_length": args.max_length,
+            "show_progress_bar": args.show_progress_bar,
+            "end_to_end": args.end_to_end,
+        }
         if isinstance(self.model, SetFitModelWithEarlyStopping):
             early_stopping_kwargs = {}
             
@@ -518,15 +605,80 @@ class SetFitEarlyStoppingTrainer(Trainer):
                 y_train,
                 x_eval,
                 y_eval,
-                num_epochs=args.classifier_num_epochs,
-                batch_size=args.classifier_batch_size,
-                body_learning_rate=args.body_classifier_learning_rate,
-                head_learning_rate=args.head_learning_rate,
-                l2_weight=args.l2_weight,
-                max_length=args.max_length,
-                show_progress_bar=args.show_progress_bar,
-                end_to_end=args.end_to_end,
+                # shared args
+                **shared_args,
                 # early stopping args
                 **early_stopping_kwargs
             )
+        elif isinstance(self.model, SetFitModel):
+            self.model.fit(
+                x_train,
+                y_train,
+                # shared args
+                **shared_args
+            )
+        else:
+            raise ValueError("Model must be an instance of SetFitModel or SetFitModelWithEarlyStopping")
 
+    def _hp_search_setup(self, trial: Union["optuna.Trial", Dict[str, Any]]) -> None:
+        """HP search setup code"""
+
+        # Heavily inspired by transformers.Trainer._hp_search_setup
+        if self.hp_search_backend is None or trial is None:
+            return
+        if isinstance(trial, Dict):  # For passing a Dict to train() -- mostly unused for now
+            params = trial
+        elif self.hp_search_backend == HPSearchBackend.OPTUNA:
+            params = self.hp_space(trial)
+        else:
+            raise ValueError("Invalid trial parameter")
+
+        logger.info(f"Trial: {params}")
+        self.apply_hyperparameters(params, final_model=False)
+        
+        # NOTE the next two lines are the only ones that differs from transformers.Trainer._hp_search_setup
+        if isinstance(self.model, SetFitModelWithEarlyStopping):
+            self.model._reset_head_log_history()
+
+    def apply_hyperparameters(self, params: Dict[str, Any], final_model: bool = False) -> None:
+        """Applies a dictionary of hyperparameters to both the trainer and the model
+
+        Args:
+            params (`Dict[str, Any]`): The parameters, usually from `BestRun.hyperparameters`
+            final_model (`bool`, *optional*, defaults to `False`): If `True`, replace the `model_init()` function with a fixed model based on the parameters.
+        """
+        
+        if self.args is not None:
+            self.args = self.args.update(params, ignore_extra=True)
+        else:
+            self.args = EarlyStoppingTrainingArguments.from_dict(params, ignore_extra=True)
+
+        # capture head early stopping callback if any
+        head_early_stopping_callback = self.model.head_early_stopping_callback or None
+        
+        # Seed must be set before instantiating the model when using model_init.
+        set_seed(self.args.seed)
+        self.model = self.model_init(params)
+        
+        # set head early stopping callback
+        self.model.head_early_stopping_callback = head_early_stopping_callback
+
+        # need to create a new sentence transformer trainer because of the following problem:
+        # Problem:
+        #   trainer.apply_hyperparameters() re-instantiates a new SetFitModel (by calling model_init function) and thus a new SentenceTransformer "body".
+        #   However, the old internal Sentence-Transformers trainer (self.st_trainer) is kept and still bound to the previous model instance and its optimizer graph.
+        #   As a result, gradients are computed for the wrong model (or detached entirely), so the sentence-embedding body stopped updating.
+        # 
+        # My fix (and why it works):
+        #   By recreating a fresh BCSentenceTransformersTrainer after every call to apply_hyperparameters(),  ensure that the internal ST trainer, its loss, optimizer, and callbacks are all initialized with the current model body and arguments, keeping the computation graph and gradient flow consistent with the newly instantiated model.
+        callbacks = copy(self.st_trainer.callback_handler.callbacks)
+        from setfit.trainer import BCSentenceTransformersTrainer
+        self.st_trainer = BCSentenceTransformersTrainer(
+            setfit_model=self.model,
+            setfit_args=self._to_setfit_train_args(self.args),
+            callbacks=[]#,
+        )
+        self.st_trainer.callback_handler.callbacks = callbacks
+
+        if final_model:
+            self.model_init = None

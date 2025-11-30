@@ -1,52 +1,62 @@
 
 import torch
 
-from setfit import SetFitHead, SetFitModel
-from sentence_transformers import SentenceTransformer
-
-from .class_weights_head import SetFitHeadWithClassWeights
-from .span_embedding import SentenceTransformerForSpanEmbedding, SetFitModelForSpanClassification
-
 from typing import Mapping, Optional, Union
 from numpy._typing import NDArray
 
-get_device = lambda: 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
+# default setfit body and head
+from sentence_transformers import SentenceTransformer
+from setfit.modeling import SetFitHead
+
+# class weight head
+from .class_weights_head import SetFitHeadWithClassWeights
+from .early_stopping import SetFitModelWithEarlyStopping
+from .span_embedding import (
+    SentenceTransformerForSpanEmbedding,
+    SetFitModelForSpanClassification,
+)
 
 def model_init(
-        model_name: str,
-        id2label: Mapping[int, str],
-        multitarget_strategy: Optional[str]=None,
-        use_span_embedding: bool=True,
-        class_weights: Optional[NDArray]=None,
-        device: Optional[Union[str, torch.device]]=None
-    ) -> "SetFitModel":
+        model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
+        num_classes: int = 2,
+        class_weights: NDArray = None,
+        multilabel: bool = False,
+        use_span_embedding: bool = False,
+        body_kwargs: dict = {},
+        head_kwargs: dict = {},
+        model_kwargs: dict = {},
+    ) -> SetFitModelWithEarlyStopping | SetFitModelForSpanClassification:
+    """
+    Initialize a SetFit model with optional span embeddings and class weights.
+    """
+
+    body_class = SentenceTransformerForSpanEmbedding if use_span_embedding else SentenceTransformer
+    body_kwargs={"device_map": "auto", **body_kwargs}
+    body = body_class(model_name, model_kwargs=body_kwargs, trust_remote_code=True)
+    
+    
+    head_class = SetFitHead
+    head_kwargs = {
+        "in_features": body.get_sentence_embedding_dimension(),
+        "out_features": num_classes,
+        "device": body.device,
+        "multitarget": multilabel,
+        **head_kwargs
+    }
     if class_weights is not None:
-      if multitarget_strategy is None:
-        if len(id2label) != len(class_weights):
-            raise ValueError('length of `class_weights` must be same as `out_features`')
+        head_class = SetFitHeadWithClassWeights
+        head_kwargs["class_weights"] = class_weights
+    head = head_class(**head_kwargs)
+    
 
-    if device is None:
-        device = get_device()
-
-    body = SentenceTransformerForSpanEmbedding(model_name, device='cpu') if use_span_embedding else SentenceTransformer(model_name, device='cpu')
-
-    head_kwargs = dict(
-        in_features=body.get_sentence_embedding_dimension(),
-        out_features=len(id2label),
-        device='cpu',
-        multitarget=isinstance(multitarget_strategy, str),
-    )
-    if class_weights is not None:
-        head_kwargs['class_weights'] = class_weights
-        head = SetFitHeadWithClassWeights(**head_kwargs)
-    else:
-        head = SetFitHead(**head_kwargs)
-
-    ModelClass = SetFitModelForSpanClassification if use_span_embedding else SetFitModel
-    return ModelClass(
-        model_head=head,
+    model_class = SetFitModelForSpanClassification if use_span_embedding else SetFitModelWithEarlyStopping
+    if multilabel and "multi_target_strategy" not in model_kwargs:
+        model_kwargs["multi_target_strategy"] = "one-vs-rest"
+    model = model_class(
         model_body=body,
-        multitarget_strategy=multitarget_strategy,
-        labels=list(id2label.values()),
-        id2label=id2label
-    ).to(device)
+        model_head=head.to(body.device),
+        normalize_embeddings=True,
+        **model_kwargs
+    ).to(body.device)
+
+    return model
