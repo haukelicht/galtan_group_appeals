@@ -27,6 +27,10 @@ code/**/*.err
 #renv.lock
 #setup
 
+qualtrix/
+paper/
+models/
+
 data/
 !data/annotations/group-mention-annotation-batch-01/*
 
