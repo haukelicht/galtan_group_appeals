@@ -1,12 +1,8 @@
 
-import os
 import pandas as pd
-import numpy as np
-import torch
 
-from transformers import pipeline
+from transformers import pipeline, AutoModelForSequenceClassification, AutoTokenizer
 
-from tqdm import tqdm
 from utils.nli import (
     STANCE_HYPOTHESIS_TEMPLATE,
     STANCE_LABEL_CLASSES,
@@ -14,13 +10,13 @@ from utils.nli import (
     ZeroShotMentionClassificationArgumentHandler,
     clean_memory
 )
+from tqdm import tqdm
 
 
 from types import SimpleNamespace
 
 args = SimpleNamespace()
 
-args.model_path = '../../models/nli_stance_classifier'
 
 
 args.input_file = '../../data/labeled/manifesto_sentences_predicted_group_mentions_spans.tsv'
@@ -30,13 +26,14 @@ args.sentence_text_col = 'sentence_text'
 args.mention_text_col = 'text'
 args.id_cols = 'sentence_id,span_nr'
 
+args.model_path = '../../models/mention_stance_nli'
 args.batch_size = 64
-args.chunk_size = 640
+args.chunk_size = 64*10
 
 args.output_file = '../../data/labeled/manifesto_sentences_predicted_social_group_mentions_stance.tsv'
 
-args.test = True
-args.n_test = 1000
+args.test = False
+args.n_test = args.chunk_size*4
 
 # parse
 args.id_cols = [c.strip() for c in args.id_cols.split(',')]
@@ -59,9 +56,13 @@ df.loc[:, "sentence_text_prepared"] = 'The quote: """' + df['input'].fillna("") 
 df = df[cols + ['sentence_text_prepared']]
 
 
+model = AutoModelForSequenceClassification.from_pretrained(args.model_path, device_map="auto", torch_dtype="auto")
+tokenizer = AutoTokenizer.from_pretrained(args.model_path)
+
 classifier = pipeline(
     task='zero-shot-classification',
-    model=args.model_path,
+    model=model,
+    tokenizer=tokenizer,
     framework='pt',
     args_parser=ZeroShotMentionClassificationArgumentHandler()
 )
@@ -88,14 +89,15 @@ def _predict_batch(df, batch_size=64):
 
 
 n = len(df)
-for i in tqdm(range(0, n, args.chunk_size)):
+chunk_size = args.chunk_size
+for i in tqdm(range(0, n, chunk_size)):
     if i + chunk_size > n:
         chunk_size = n - i
     preds_df = _predict_batch(df.iloc[i:i+chunk_size], batch_size=args.batch_size)
     if i == 0:
-        preds_df.to_csv(args.output_file, sep="\t", index=False)
+        preds_df.to_csv(args.output_file, sep="\t", index=False, float_format='%.6f')
     else:
-        preds_df.to_csv(args.output_file, sep="\t", mode='a', header=False, index=False)
+        preds_df.to_csv(args.output_file, sep="\t", mode='a', header=False, index=False, float_format='%.6f')
     del preds_df
     clean_memory()
     
