@@ -171,6 +171,12 @@ class SetFitHeadWithClassWeights(SetFitHead):
             self.class_weights = self.class_weights.to(device)
         return self
     
+    def predict_proba(self, x_test: torch.Tensor) -> torch.Tensor:
+        self.eval()
+        with torch.no_grad():
+            probs = self(x_test)[1]
+        return probs
+    
     def get_config_dict(self) -> Dict[str, Optional[Union[int, float, bool, List[float]]]]:
         return {
             "in_features": self.in_features,

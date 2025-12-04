@@ -6,7 +6,7 @@ if not is_python_script:
     from types import SimpleNamespace
     args = SimpleNamespace()
 
-    args.data_splits_path =  '../../data/annotations/group_mention_categorization/splits/fold01/'
+    args.data_splits_path =  '../../data/annotations/group_mention_categorization/splits/model_selection/fold01/'
     # args.label_cols = 'economic,noneconomic'
     args.label_cols = 'noneconomic__*'
     
@@ -44,16 +44,17 @@ if not is_python_script:
     strategy = 'span_embedding' if args.use_span_embeddings else 'mention_text' if args.concat_strategy is None else f'concat_{args.concat_strategy}'
     args.save_eval_results_to = f'../../results/classifiers/noneconomic_attributes_classification/model_selection/setfit/{args.model_name.replace("/", "--")}/fold01/{strategy}'
     args.overwrite_results = True
+    
     args.do_eval = True
     args.save_eval_results = True
     args.save_eval_predictions = True
+    
     args.do_test = False
     args.save_test_results = False
     args.save_test_predictions = False
 
     args.save_model = False
     # args.save_model_to = '../../models/'
-    # args.save_model_as = 'social-group-mention-attribute-dimension-classifier-v3'
 
 else: # like __name__ == '__main__'
     
@@ -66,6 +67,8 @@ else: # like __name__ == '__main__'
     parser.add_argument('--text_col', type=str , default='text', help='Column name for mention context text')
     parser.add_argument('--mention_col', type=str , default='mention', help='Column name for mention text')
     parser.add_argument('--span_col', type=str , default='span', help='Column name for mention span (start, end)')
+
+    parser.add_argument('--combine_splits', default=None, type=str, nargs='+', help='If specified, combine the given splits into a single training set (e.g., --combine_splits val test)')
     
     parser.add_argument('--model_name', type=str, required=True, help='Name of the model to use. Must be a sentence-transformers compatible model.')
     parser.add_argument('--use_span_embeddings', action='store_true', help='Whether to use custom SeFitForSpanClassification Trainer instead of mention and text concatenation or mention-only strategies')
@@ -75,26 +78,33 @@ else: # like __name__ == '__main__'
     parser.add_argument('--class_weighting_strategy', type=str, choices=[None, 'balanced', 'inverse_proportional'], default=None, help='Class weighting strategy to use during training')
     parser.add_argument('--class_weighting_smooth_exponent', type=float, default=None, help='Smoothing exponent to use when computing class weights (only relevant if --class_weighting_strategy is set to "inverse_proportional")')
 
-    parser.add_argument('--head_learning_rate', type=float, default=0.01, help='Learning rate to use for classifier head training')
+    
+    parser.add_argument('--num_epochs', type=int, nargs='+', default=[1, 15], help='Tuple of (min, max) number of epochs to use for embedding model and classifier training, respectively')
     parser.add_argument('--train_batch_sizes', type=int, nargs='+', default=[32, 8], help='Tuple of batch sizes to use for embedding model and classifier training, respectively')
-
+    
+    parser.add_argument('--body_train_max_steps', type=int, default=750, help='Maximum number of training steps for sentence transformer finetuning')
+    parser.add_argument('--head_learning_rate', type=float, default=0.01, help='Learning rate to use for classifier head training')
+    parser.add_argument('--l2_weight', type=float, default=0.01, help='L2 weight to use for classifier head training')
+    parser.add_argument('--warmup_proportion', type=float, default=0.1, help='Warmup proportion to use for classifier head training')
+    
     parser.add_argument('--body_early_stopping_patience', type=int, default=3, help='Early stopping patience for sentence transformer finetuning')
     parser.add_argument('--body_early_stopping_threshold', type=float, default=0.01, help='Early stopping threshold for sentence transformer finetuning')
     parser.add_argument('--head_early_stopping_patience', type=int, default=5, help='Early stopping patience for classifier head finetuning')
     parser.add_argument('--head_early_stopping_threshold', type=float, default=0.015, help='Early stopping threshold for classifier head finetuning')
 
-    parser.add_argument('--save_eval_results_to', type=str, required=True, help='Directory to save evaluation results to')
+    parser.add_argument('--save_eval_results_to', type=str, default=None, help='Directory to save evaluation results to')
     parser.add_argument('--overwrite_results', action='store_true', help='Whether to overwrite existing evaluation results')
+    
     parser.add_argument('--do_eval', action='store_true', help='Whether to perform evaluation on the validation set')
     parser.add_argument('--save_eval_results', action='store_true', help='Whether to save evaluation results to disk')
     parser.add_argument('--save_eval_predictions', action='store_true', help='Whether to save evaluation predictions to disk')
+    
     parser.add_argument('--do_test', action='store_true', help='Whether to perform testing on the test set')
     parser.add_argument('--save_test_results', action='store_true', help='Whether to save test results to disk')
     parser.add_argument('--save_test_predictions', action='store_true', help='Whether to save test predictions to disk')
     
     parser.add_argument('--save_model', action='store_true', help='Whether to save the trained model to disk')
     parser.add_argument('--save_model_to', type=str, help='Directory to save the trained model to')
-    parser.add_argument('--save_model_as', type=str, help='Name to save the trained model as')
     
     args = parser.parse_args()
 
@@ -121,7 +131,7 @@ set_seed(SEED, deterministic=True) # for reproducibility
 
 # default setfit body and head
 from sentence_transformers import SentenceTransformer
-from setfit.modeling import SetFitHead
+from setfit.modeling import SetFitHead, SetFitModel
 
 # class weight head
 from src.finetuning.setfit_extensions.class_weights_head import (
@@ -147,14 +157,15 @@ from sklearn.metrics import classification_report
 
 def model_init(
         model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
-        num_classes: int = 2,
+        id2label: dict = None, #num_classes: int = 2,
         class_weights: np._typing.NDArray = None,
         multilabel: bool = False,
         use_span_embedding: bool = False,
         body_kwargs: dict = {},
         head_kwargs: dict = {},
         model_kwargs: dict = {},
-    ) -> SetFitModelWithEarlyStopping | SetFitModelForSpanClassification:
+        enable_early_stopping: bool = True,
+    ) -> SetFitModel | SetFitModelWithEarlyStopping | SetFitModelForSpanClassification:
     """
     Initialize a SetFit model with optional span embeddings and class weights.
     """
@@ -167,7 +178,7 @@ def model_init(
     head_class = SetFitHead
     head_kwargs = {
         "in_features": body.get_sentence_embedding_dimension(),
-        "out_features": num_classes,
+        "out_features": len(id2label), # num_classes,
         "device": body.device,
         "multitarget": multilabel,
         **head_kwargs
@@ -178,13 +189,19 @@ def model_init(
     head = head_class(**head_kwargs)
     
 
-    model_class = SetFitModelForSpanClassification if use_span_embedding else SetFitModelWithEarlyStopping
+    if use_span_embedding:
+        model_class = SetFitModelForSpanClassification
+    elif enable_early_stopping:
+        model_class = SetFitModelWithEarlyStopping
+    else:
+        model_class = SetFitModel
     if multilabel and "multi_target_strategy" not in model_kwargs:
         model_kwargs["multi_target_strategy"] = "one-vs-rest"
     return model_class(
         model_body=body,
-        model_head=head.to(body.device),
         normalize_embeddings=True,
+        model_head=head.to(body.device),
+        labels=list(id2label.values()),
         **model_kwargs
     )
 
@@ -205,7 +222,7 @@ if args.save_eval_results_to is not None:
         args.save_eval_results_to.mkdir(parents=True, exist_ok=True)
 
 if args.save_model:
-    if args.save_model_to is None or args.save_model_as is None:
+    if args.save_model_to is None:
         raise ValueError("Both 'save_model_to' and 'save_model_as' must be specified if 'save_model' is True.")
     args.save_model_to = Path(args.save_model_to)
 
@@ -215,7 +232,12 @@ if args.save_model:
 
 df = pd.concat({split: pd.read_pickle(args.data_splits_path / f"{split}.pkl") for split in ['train', 'val', 'test']})
 df.reset_index(level=0, names='split', inplace=True)
-df['split'] = pd.Categorical(df['split'], categories=['train', 'val', 'test'], ordered=True)
+if args.combine_splits is not None:
+    for split in args.combine_splits:
+        df.loc[df.split == split, 'split'] = 'train'
+# df['split'] = pd.Categorical(df['split'], categories=['train', 'val', 'test'], ordered=True)
+
+
 
 # ### prepare the label column
 
@@ -293,75 +315,84 @@ else:
 from sentence_transformers.losses import ContrastiveLoss
 
 if args.save_model:
-    if args.save_model_to is None or args.save_model_as is None:
+    if args.save_model_to is None:
         raise ValueError("Both 'save_model_to' and 'save_model_as' must be specified if 'save_model' is True.")
-    model_dir = args.save_model_to / args.save_model_as 
+    model_dir = args.save_model_to
 else:
     from tempfile import TemporaryDirectory
     with TemporaryDirectory() as tmpdirname:
         model_dir = tmpdirname
 
+eval_while_training = "val" in datasets.keys()
+if eval_while_training:
+    early_stopping_train_args = dict(
+        # early stopping config
+        metric_for_best_model=("embedding_loss", "f1"),
+        greater_is_better=(False, True),
+        load_best_model_at_end=True,
+        save_total_limit=2, # NOTE: currently no effect on (early stopping in) classification head training
+    )
+else:
+    early_stopping_train_args = dict()
+
 training_args = EarlyStoppingTrainingArguments(
     output_dir=model_dir,
     loss=ContrastiveLoss,
     
-    num_epochs=(1, 25),
+    num_epochs=tuple(args.num_epochs),
     batch_size=tuple(args.train_batch_sizes),
+    end_to_end=True,
 
     head_learning_rate = args.head_learning_rate,
-    # l2_weight=0.03,# TODO !!! /default 0.01
-    # warmup_proportion=0.15, # TODO !!! /default 0.1
+    l2_weight=args.l2_weight,
+    warmup_proportion=args.warmup_proportion,
     
     # sentence transformer (embedding) finetuning args
+    max_steps=args.body_train_max_steps,
     logging_first_step=False,
-    eval_strategy="steps",
-    eval_steps=50,
-    max_steps=750,
-    eval_max_steps=250,
+    eval_strategy="steps" if eval_while_training else "no",
+    eval_steps=50 if eval_while_training else None,
+    eval_max_steps=250 if eval_while_training else None,
     
-    # early stopping config
-    metric_for_best_model=("embedding_loss", "f1"),
-    greater_is_better=(False, True),
-    load_best_model_at_end=True,
-    save_total_limit=2, # NOTE: currently no effect on (early stopping in) classification head training
-    
-    # misc
-    end_to_end=True,
+    # early stopping args
+    **early_stopping_train_args,
 )
 
-training_callbacks = [
-    # for sentence transformer finetuning
-    EarlyStoppingCallback(
-        early_stopping_patience=args.body_early_stopping_patience,
-        early_stopping_threshold=args.body_early_stopping_threshold,
-    ), 
-    # for classifier finetuning
-    EarlyStoppingCallback(
-        early_stopping_patience=args.head_early_stopping_patience,
-        early_stopping_threshold=args.head_early_stopping_threshold,
-    ), 
-]
+
+training_callbacks = []
+if eval_while_training:
+    training_callbacks += [
+        # for sentence transformer finetuning
+        EarlyStoppingCallback(
+            early_stopping_patience=args.body_early_stopping_patience,
+            early_stopping_threshold=args.body_early_stopping_threshold,
+        ), 
+        # for classifier finetuning
+        EarlyStoppingCallback(
+            early_stopping_patience=args.head_early_stopping_patience,
+            early_stopping_threshold=args.head_early_stopping_threshold,
+        ), 
+    ]
 
 trainer_class = SetFitTrainerForSpanClassification if args.use_span_embeddings else SetFitEarlyStoppingTrainer
 
 trainer = trainer_class(
     model_init=lambda: model_init(
         model_name=args.model_name,
-        num_classes=len(id2label),
+        #num_classes=len(id2label),
+        id2label=id2label,
         multilabel=True,
         class_weights=class_weights,
         use_span_embedding=args.use_span_embeddings,
     ),
-    metric="f1",
+    metric="f1" if eval_while_training else None,
     metric_kwargs={
         "average": "macro" if args.label_cols and len(args.label_cols) > 1 else "binary",
-        # "zero_division": 0.0
     },
     args=training_args,
     train_dataset=datasets['train'],
-    eval_dataset=datasets['val'],
+    eval_dataset=datasets['val'] if eval_while_training else None,
     callbacks=training_callbacks,
-    # column_mapping=cols_mapping,
 )
 # fix max_length issue
 trainer._args.max_length = min(trainer.st_trainer.model.tokenizer.model_max_length, int(max_length_*1.1))
@@ -384,6 +415,12 @@ trainer.train()
 if os.path.exists(model_dir):
     shutil.rmtree(model_dir)
 
+# ## Save the model
+
+if args.save_model:
+    trainer.model.save_pretrained(model_dir)
+
+
 # ## Evaluate
 
 def get_predictions_df(split: str = 'val') -> pd.DataFrame:
@@ -392,70 +429,42 @@ def get_predictions_df(split: str = 'val') -> pd.DataFrame:
     inputs = trainer.model._normalize_inputs(texts=datasets[split]['text'], spans=datasets[split]['span']) if args.use_span_embeddings else datasets[split]['text']
     
     probs = trainer.model.predict_proba(inputs, as_numpy=True)
-    prob_cols = [f"prob_{col}" for col in args.label_cols]
+    prob_cols = [f"prob_{col}" for col in trainer.model.labels]
     preds_df[prob_cols] = probs
     
     preds = np.where(probs > 0.5, 1, 0)
-    pred_cols = [f"pred_{col}" for col in args.label_cols]
+    pred_cols = [f"pred_{col}" for col in trainer.model.labels]
     preds_df[pred_cols] = preds
     
-    for lab in args.label_cols:
+    for lab in trainer.model.labels:
         preds_df[f"error_{lab}"] = preds_df[f"pred_{lab}"] != preds_df[lab]
     
     return preds_df
 
 # ### Validation set
 
-inputs = trainer.model._normalize_inputs(texts=datasets['val']['text'], spans=datasets['val']['span']) if args.use_span_embeddings else datasets['val']['text']
-preds = trainer.model.predict(inputs, as_numpy=True)
-
 if args.do_eval:
+
+    inputs = trainer.model._normalize_inputs(texts=datasets['val']['text'], spans=datasets['val']['span']) if args.use_span_embeddings else datasets['val']['text']
+    preds = trainer.model.predict(inputs, as_numpy=True)
     print(classification_report(y_pred=preds, y_true=datasets['val']['label'], target_names=args.label_cols, zero_division=0))
 
-if args.save_eval_results:
-    res = classification_report(y_pred=preds, y_true=datasets['val']['label'], target_names=args.label_cols, zero_division=0, output_dict=True)
-    fp = args.save_eval_results_to / 'eval_results.json'
-    with open(fp, 'w') as f:
-        json.dump(res, f)
+    if args.save_eval_results:
+        res = classification_report(y_pred=preds, y_true=datasets['val']['label'], target_names=args.label_cols, zero_division=0, output_dict=True)
+        fp = args.save_eval_results_to / 'eval_results.json'
+        with open(fp, 'w') as f:
+            json.dump(res, f)
 
-if args.save_eval_predictions:
-    preds_df = get_predictions_df(split='val')
-    fp = args.save_eval_results_to / 'eval_predictions.pkl'
-    preds_df.to_pickle(fp)
+    if args.save_eval_predictions:
+        preds_df = get_predictions_df(split='val')
+        fp = args.save_eval_results_to / 'eval_predictions.pkl'
+        preds_df.to_pickle(fp)
 
 # ### Test set
-
-inputs = trainer.model._normalize_inputs(texts=datasets['test']['text'], spans=datasets['test']['span']) if args.use_span_embeddings else datasets['test']['text']
-preds = trainer.model.predict(inputs, as_numpy=True)
 
 if args.do_test:
     print(classification_report(y_pred=preds, y_true=datasets['test']['label'], target_names=args.label_cols, zero_division=0))
 
-if args.save_test_results:
-    res = classification_report(y_pred=preds, y_true=datasets['test']['label'], target_names=args.label_cols, zero_division=0, output_dict=True)
-    fp = args.save_eval_results_to / 'test_results.json'
-    with open(fp, 'w') as f:
-        json.dump(res, f)
-
-if args.save_test_predictions:
-    preds_df = get_predictions_df(split='test')
-    fp = args.save_eval_results_to / 'test_predictions.pkl'
-    preds_df.to_pickle(fp)
-
-# highlight = lambda text, mention: text.replace(mention, '\u001B[30m\u001B[43m'+mention+'\033[0m')
-
-# for labs, subdf in df_test.groupby(args.label_cols):
-#     print("\033[1mtrue\033[0m:", [id2label[i] for i, l in enumerate(labs) if l==1])
-#     subdf = subdf[subdf[error_cols].any(axis=1)]
-#     for preds, subsubdf in subdf.groupby(pred_cols):
-#         print(" ↳ \033[1m\033[3mpred\033[0m:", [id2label[i] for i, l in enumerate(preds) if l==1])
-#         for i, row in subsubdf.sample(n=min(4, len(subsubdf)), random_state=42).iterrows():
-#             print(f"    - {str(i).rjust(3)}: {highlight(row['text'], row['mention'])}")
-#     print()
-
-# ## Save the model
-
-if args.save_model:
-    trainer.model.save_pretrained(model_dir)
-
+    inputs = trainer.model._normalize_inputs(texts=datasets['test']['text'], spans=datasets['test']['span']) if args.use_span_embeddings else datasets['test']['text']
+    preds = trainer.model.predict(inputs, as_numpy=True)
 

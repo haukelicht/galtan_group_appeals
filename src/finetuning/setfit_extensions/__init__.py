@@ -18,13 +18,15 @@ from .span_embedding import (
 
 def model_init(
         model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
-        num_classes: int = 2,
+        id2label: Optional[Mapping[int, str]] = None,
+        # num_classes: int = 2,
         class_weights: NDArray = None,
         multilabel: bool = False,
         use_span_embedding: bool = False,
         body_kwargs: dict = {},
         head_kwargs: dict = {},
         model_kwargs: dict = {},
+        **kwargs
     ) -> SetFitModelWithEarlyStopping | SetFitModelForSpanClassification:
     """
     Initialize a SetFit model with optional span embeddings and class weights.
@@ -38,7 +40,7 @@ def model_init(
     head_class = SetFitHead
     head_kwargs = {
         "in_features": body.get_sentence_embedding_dimension(),
-        "out_features": num_classes,
+        "out_features": len(id2label), # num_classes,
         "device": body.device,
         "multitarget": multilabel,
         **head_kwargs
@@ -56,6 +58,7 @@ def model_init(
         model_body=body,
         model_head=head.to(body.device),
         normalize_embeddings=True,
+        labels=list(id2label.values()) if id2label is not None else None,
         **model_kwargs
     ).to(body.device)
 

@@ -9,11 +9,14 @@ from datasets import Dataset
 from transformers.trainer_callback import TrainerCallback
 from transformers.trainer_utils import set_seed, PredictionOutput
 from transformers import EarlyStoppingCallback
-try:
-    import optuna
-    from transformers.trainer_utils import HPSearchBackend
-except:
-    pass
+
+# for subclassing of hyperparameter search logic
+import optuna
+from transformers.trainer_utils import HPSearchBackend, default_compute_objective, set_seed
+from setfit.integrations import default_hp_search_backend, is_optuna_available, run_hp_search_optuna
+from setfit.utils import BestRun, default_hp_space_optuna
+
+
 
 from tqdm import tqdm, trange
 import warnings
@@ -682,3 +685,83 @@ class SetFitEarlyStoppingTrainer(Trainer):
 
         if final_model:
             self.model_init = None
+
+    
+    # def hyperparameter_search(
+    #     self,
+    #     hp_space: Optional[Callable[["optuna.Trial"], Dict[str, float]]] = None,
+    #     compute_objective: Optional[Callable[[Dict[str, float]], float]] = None,
+    #     n_trials: int = 10,
+    #     direction: str = "maximize",
+    #     backend: Optional[Union["str", HPSearchBackend]] = None,
+    #     hp_name: Optional[Callable[["optuna.Trial"], str]] = None,
+    #     **kwargs,
+    # ) -> BestRun:
+    #     """
+    #     Launch a hyperparameter search using `optuna`. The optimized quantity is determined
+    #     by `compute_objective`, which defaults to a function returning the evaluation loss when no metric is provided,
+    #     the sum of all metrics otherwise.
+
+    #     <Tip warning={true}>
+
+    #     To use this method, you need to have provided a `model_init` when initializing your [`Trainer`]: we need to
+    #     reinitialize the model at each new run.
+
+    #     </Tip>
+
+    #     Args:
+    #         hp_space (`Callable[["optuna.Trial"], Dict[str, float]]`, *optional*):
+    #             A function that defines the hyperparameter search space. Will default to
+    #             [`~transformers.trainer_utils.default_hp_space_optuna`].
+    #         compute_objective (`Callable[[Dict[str, float]], float]`, *optional*):
+    #             A function computing the objective to minimize or maximize from the metrics returned by the `evaluate`
+    #             method. Will default to [`~transformers.trainer_utils.default_compute_objective`] which uses the sum of metrics.
+    #         n_trials (`int`, *optional*, defaults to 100):
+    #             The number of trial runs to test.
+    #         direction (`str`, *optional*, defaults to `"maximize"`):
+    #             Whether to optimize greater or lower objects. Can be `"minimize"` or `"maximize"`, you should pick
+    #             `"minimize"` when optimizing the validation loss, `"maximize"` when optimizing one or several metrics.
+    #         backend (`str` or [`~transformers.training_utils.HPSearchBackend`], *optional*):
+    #             The backend to use for hyperparameter search. Only optuna is supported for now.
+    #             TODO: add support for ray and sigopt.
+    #         hp_name (`Callable[["optuna.Trial"], str]]`, *optional*):
+    #             A function that defines the trial/run name. Will default to None.
+    #         kwargs (`Dict[str, Any]`, *optional*):
+    #             Additional keyword arguments passed along to `optuna.create_study`. For more
+    #             information see:
+
+    #             - the documentation of
+    #               [optuna.create_study](https://optuna.readthedocs.io/en/stable/reference/generated/optuna.study.create_study.html)
+
+    #     Returns:
+    #         [`trainer_utils.BestRun`]: All the information about the best run.
+    #     """
+    #     if backend is None:
+    #         backend = default_hp_search_backend()
+    #         if backend is None:
+    #             raise RuntimeError("optuna should be installed. To install optuna run `pip install optuna`.")
+    #     backend = HPSearchBackend(backend)
+    #     if backend == HPSearchBackend.OPTUNA and not is_optuna_available():
+    #         raise RuntimeError("You picked the optuna backend, but it is not installed. Use `pip install optuna`.")
+    #     elif backend != HPSearchBackend.OPTUNA:
+    #         raise RuntimeError("Only optuna backend is supported for hyperparameter search.")
+    #     self.hp_search_backend = backend
+    #     if self.model_init is None:
+    #         raise RuntimeError(
+    #             "To use hyperparameter search, you need to pass your model through a model_init function."
+    #         )
+
+    #     self.hp_space = default_hp_space_optuna if hp_space is None else hp_space
+    #     self.hp_name = hp_name
+    #     self.compute_objective = default_compute_objective if compute_objective is None else compute_objective
+
+    #     backend_dict = {
+    #         HPSearchBackend.OPTUNA: run_hp_search_optuna,
+    #     }
+    #     best_run = backend_dict[backend](self, n_trials, direction, **kwargs)
+
+    #     # do _not_ delete hp_search_backend attribute to allow for inspecting it after HP search
+    #     # self.hp_search_backend = None 
+    #     # NOTE: this is the only change to base class's implementation (see https://github.com/huggingface/setfit/blob/f8b42a96ab8b9b504c879d62b6f5020cf4876ac8/src/setfit/trainer.py#L719C1-L793C24)
+        
+    #     return best_run
