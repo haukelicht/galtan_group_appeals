@@ -202,7 +202,7 @@ class GroupMentionAttributesClassifierWorkflow(Workflow):
     @step(num_workers=14) # = number of attributes to classify in parallel
     async def classify_one(self, ctx: Context, ev: ClassificationEvent) -> ClassificationResult:
         # if self.verbose: log(f'  - {self.attributes[ev.attribute_id].name}')
-        output = await self.classifiers[ev.attribute_id].acall(text=ev.text, mention=ev.mention)
+        output = await self.classifiers[ev.attribute_id].acall(text=ev.text, mention=ev.mention, llm_kwargs=self.classifiers[ev.attribute_id].llm_kwargs)
         if output.classification not in ('yes', 'no'):
             raise ValueError()
         return ClassificationResult(attribute_id=ev.attribute_id, result=output)

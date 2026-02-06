@@ -3,10 +3,12 @@ from icl.prompts import ATTRIBUTE_CLASSIFICATION_TASK_PROMPT_TEMPLATE
 from llama_index.core.program import LLMTextCompletionProgram 
 from llama_index.core.prompts import PromptTemplate
 from llama_index.core.llms.llm import LLM
+from llama_index.llms.openai_like import OpenAILike
 
 from pydantic import BaseModel, Field
 from icl._utils.hf_utils import get_response_format
 from llama_index.core.output_parsers import PydanticOutputParser
+from openai.resources.chat.completions.completions import _type_to_response_format
 
 import pandas as pd
 from copy import deepcopy
@@ -18,9 +20,23 @@ from icl.retrieval import RandomRetriever, retrieve_mention_classification_exemp
 from typing import Literal, Optional, Dict, Any
 
 
+
+class Opinion(BaseModel):
+    answer: Literal["Insbruck", "Vienna", "Salzburg"] = Field(..., 
+        description="One-word answer to the multiple-choice opinion question."
+    )
+    explanation: str = Field(...,
+        description="1-2 sentences long explanation of your opinion."
+    )
+
 class HasAttribute(BaseModel):
     reasoning: str = Field(..., description="One or two short sentences documenting your classification reasoning")
     classification: Literal["yes", "no"] = Field(..., description="Classification decision")
+
+class Exemplar(BaseModel):
+    # reasoning: str = Field(..., description="One or two short sentences documenting your classification reasoning")
+    classification: Literal["yes", "no"] = Field(..., description="Classification decision")
+
 
 class MentionAttributeClassificationProgram(LLMTextCompletionProgram):
     template = PromptTemplate(ATTRIBUTE_CLASSIFICATION_TASK_PROMPT_TEMPLATE)
@@ -78,6 +94,10 @@ class MentionAttributeClassificationProgram(LLMTextCompletionProgram):
         # create the response format
         # TODO: consider whether this only applies to HF (inference) LLMs
         self.response_format = get_response_format(self.output_cls)
+
+        self.llm_kwargs = None
+        if isinstance(self._llm, OpenAILike):
+            self.llm_kwargs = {"extra_body": {"response_format": _type_to_response_format(self.output_cls)}}
 
         # setup few-shot logic
         self.is_fewshot = False
@@ -137,7 +157,8 @@ class MentionAttributeClassificationProgram(LLMTextCompletionProgram):
             mention=mention, # <== input text used for retrieval passed to kwargs of ``retrieve_mention_classification_exemplars()``
             text_field_name='text',
             mention_field_name='mention',
-            format_metadata_fun=lambda text, metadata: self.output_cls(reasoning='...', classification=metadata.get('classification', metadata.get(self.attribute_id))),
+            # format_metadata_fun=lambda text, metadata: self.output_cls(reasoning='...', classification=metadata.get('classification', metadata.get(self.attribute_id))),
+            format_metadata_fun=lambda text, metadata: Exemplar(classification=metadata.get('classification', metadata.get(self.attribute_id))),
             return_as='text',
             attribute_id=self.attribute_id,  # Pass attribute_id for filtering
             reshuffle=self.exemplars_reshuffle

@@ -43,6 +43,11 @@ from icl.workflow import GroupMentionAttributesClassifierWorkflow, Classificatio
 from icl._utils.log import log
 from llama_index.core.llms.llm import LLM
 
+DEFAULT_BACKEND_OPENAILIKE_URLS = {
+    'vllm': 'http://localhost:8000/v1',
+    'ollama': 'http://localhost:11434/v1',
+}
+
 
 class GroupMentionClassifier:
     """
@@ -57,6 +62,7 @@ class GroupMentionClassifier:
         llm_backend: Literal['vllm', 'ollama', 'huggingface', 'openai-like'] = 'vllm',
         temperature: float = 0.0,
         seed: int = 42,
+        tokenizer: Optional[str] = None,
         n_exemplars: Optional[int] = None,
         exemplars_data: Optional[pd.DataFrame] = None,
         exemplars_file: Optional[Union[str, Path]] = None,
@@ -74,6 +80,7 @@ class GroupMentionClassifier:
             llm_backend: LLM backend to use ('ollama', 'huggingface', or 'openai-like')
             temperature: Sampling temperature (0.0 for deterministic)
             seed: Random seed for reproducibility
+            tokenizer: Tokenizer name (for vLLM backend). If None, defaults to model_name
             n_exemplars: Number of exemplars for few-shot learning (None for zero-shot)
             exemplars_data: DataFrame with exemplars (columns: text, mention, attribute labels)
             exemplars_file: Path to file with exemplars (alternative to exemplars_data)
@@ -87,12 +94,20 @@ class GroupMentionClassifier:
                   - api_key (optional): API key, defaults to 'EMPTY'
                   - port_timeout (optional): seconds to wait for port, defaults to 300
         """
+        # set tokenizer to model_name if not provided for vLLM
+        if tokenizer is None:
+            tokenizer = model_name
+            if llm_backend in ('openai-like'):
+                log("Warning: using model_name as tokenizer for openai-like backend. "
+                    "Ensure this is intended. Otherwise, specify tokenizer explicitly.")
+        
         self.llm = self._create_llm(
             backend=llm_backend,
             model_name=model_name,
             temperature=temperature,
             seed=seed,
-            **llm_kwargs
+            tokenizer=tokenizer,
+            **self._with_default_api_base(llm_backend, llm_kwargs)
         )
         
         self.workflow = GroupMentionAttributesClassifierWorkflow(
@@ -150,11 +165,18 @@ class GroupMentionClassifier:
             time.sleep(1)
     
     @staticmethod
+    def _with_default_api_base(backend: str, llm_kwargs: dict) -> dict:
+        if 'api_base' in llm_kwargs or backend not in DEFAULT_BACKEND_OPENAILIKE_URLS:
+            return llm_kwargs
+        return {**llm_kwargs, 'api_base': DEFAULT_BACKEND_OPENAILIKE_URLS[backend]}
+
+    @staticmethod
     def _create_llm(
         backend: str,
         model_name: str,
         temperature: float = 0.0,
         seed: int = 42,
+        tokenizer: Optional[str] = None,
         **kwargs
     ) -> LLM:
         """Create LLM instance based on backend."""
@@ -190,7 +212,7 @@ class GroupMentionClassifier:
                 **kwargs
             )
             if backend == 'vllm':
-                llm.tokenizer = model_name
+                llm.tokenizer = tokenizer or model_name
             return llm
             
         elif backend == 'huggingface':
@@ -236,6 +258,7 @@ class GroupMentionClassifier:
         id_col: str = 'mention_id',
         text_col: str = 'text',
         mention_col: str = 'mention',
+        max_errors: Optional[Union[int, float]] = None,
     ) -> pd.DataFrame:
         """
         Classify mentions in a DataFrame.
@@ -245,12 +268,26 @@ class GroupMentionClassifier:
             id_col: Column name for mention IDs
             text_col: Column name for text/sentences
             mention_col: Column name for mentions
+            max_errors: Error tolerance. If None, never stop early. If int, stop after
+                this many errors. If float in [0,1), treat as fraction of total rows.
             
         Returns:
             DataFrame with classification results
         """
         # Deduplicate to avoid processing same mention multiple times
         data_dedup = data[[id_col, text_col, mention_col]].drop_duplicates().reset_index(drop=True)
+
+        error_limit: Optional[int] = None
+        if max_errors is not None:
+            if isinstance(max_errors, float) and max_errors < 1:
+                if max_errors < 0:
+                    raise ValueError("max_errors must be >= 0")
+                total = len(data_dedup)
+                error_limit = int((max_errors * total) + 0.999999) if total > 0 else 0
+            else:
+                error_limit = int(max_errors)
+            if error_limit < 0:
+                raise ValueError("max_errors must be >= 0")
         
         annotations = {}
         error_count = 0
@@ -274,6 +311,12 @@ class GroupMentionClassifier:
                     text=row[text_col], 
                     mention=row[mention_col]
                 )
+                if error_limit is not None and error_count >= error_limit:
+                    log(
+                        f"⚠️  ERROR LIMIT reached ({error_count}/{error_limit}). "
+                        "Stopping early."
+                    )
+                    break
         
         # Convert to DataFrame
         results = pd.concat({
@@ -321,18 +364,27 @@ def main():
     
     # Input/Output
     parser.add_argument('--input', '-i', required=True, help='Input file (pkl, csv, tsv, jsonl)')
+    parser.add_argument('--id-col', default='mention_id', help='Column name for mention IDs')
+    parser.add_argument('--text-col', default='text', help='Column name for text')
+    parser.add_argument('--mention-col', default='mention', help='Column name for mentions')
+    
     parser.add_argument('--output', '-o', required=True, help='Output file (pkl, csv, tsv, jsonl)')
+    parser.add_argument('--overwrite', action='store_true', help='Overwrite output file if it exists')
+    parser.add_argument('--max-errors', type=float, default=0.3,
+                        help='Maximum number of allowed errors before stopping early. '
+                             'If float in [0,1), treated as fraction of total examples.')
     
     # LLM configuration
     parser.add_argument('--llm-backend', '-b', required=True, choices=['vllm', 'ollama', 'huggingface', 'openai-like'],
                         help='LLM backend to use')
-    parser.add_argument('--api-base', default='http://localhost:8000/v1',
-                        help='API base URL for openai-like backend (d, http://localhost:8000/v1)')
+    parser.add_argument('--api-base', default=None,
+                        help='API base URL for openai-like/vLLM backend (defaults by backend if omitted)')
     parser.add_argument('--api-key', default='EMPTY', help='API key for openai-like backend')
     parser.add_argument('--port-timeout', type=int, default=300, 
                         help='Timeout in seconds for waiting for API port to be accessible')
     
     parser.add_argument('--model-name', '-m', required=True, help='Model name')
+    parser.add_argument('--tokenizer', default=None, help='Tokenizer name (for vLLM backend). Defaults to model-name if omitted')
     parser.add_argument('--temperature', type=float, default=0.0, help='Sampling temperature')
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
     
@@ -346,11 +398,6 @@ def main():
     parser.add_argument('--exemplars-embedding-model', default='sentence-transformers/all-MiniLM-L6-v2',
                         help='Embedding model for similarity-based retrieval')
     
-    # Data columns
-    parser.add_argument('--id-col', default='mention_id', help='Column name for mention IDs')
-    parser.add_argument('--text-col', default='text', help='Column name for text')
-    parser.add_argument('--mention-col', default='mention', help='Column name for mentions')
-    
     # Other
     parser.add_argument('--verbose', '-v', action='store_true', help='Verbose output')
     parser.add_argument('--show-progress', action='store_true', default=True, help='Show progress bar')
@@ -359,6 +406,11 @@ def main():
                         help='Test mode: sample N examples from input data (default: process all)')
     
     args = parser.parse_args()
+
+    # test if output file exists and handle overwrite
+    output_path = Path(args.output)
+    if output_path.exists() and not args.overwrite:
+        parser.error(f"Output file {output_path} already exists. Use --overwrite to overwrite.")
     
     # Load input data
     input_path = Path(args.input)
@@ -386,24 +438,26 @@ def main():
             if args.verbose:
                 log(f"Test mode: sampled {len(data)} examples")
     
+    if args.api_base is None and args.llm_backend in DEFAULT_BACKEND_OPENAILIKE_URLS:
+        args.api_base = DEFAULT_BACKEND_OPENAILIKE_URLS[args.llm_backend]
+
     # Validate openai-like backend requirements
     if args.llm_backend == 'openai-like' and not args.api_base:
         parser.error('--api-base is required when using openai-like backend')
     
     # Initialize classifier
     llm_kwargs = {}
-    if args.llm_backend == 'openai-like':
+    if args.llm_backend in ('openai-like', 'vllm'):
         llm_kwargs['api_base'] = args.api_base
         llm_kwargs['api_key'] = args.api_key
         llm_kwargs['port_timeout'] = args.port_timeout
-        llm_kwargs['verbose'] = args.verbose
     
     classifier = GroupMentionClassifier(
         llm_backend=args.llm_backend,
         model_name=args.model_name,
-        api_base=args.api_base,
         temperature=args.temperature,
         seed=args.seed,
+        tokenizer=args.tokenizer,
         n_exemplars=args.n_exemplars,
         exemplars_file=args.exemplars_file,
         exemplars_sampling_strategy=args.exemplars_sampling_strategy,
@@ -423,6 +477,7 @@ def main():
         id_col=args.id_col,
         text_col=args.text_col,
         mention_col=args.mention_col,
+        max_errors=args.max_errors,
     )
     
     # Save results
