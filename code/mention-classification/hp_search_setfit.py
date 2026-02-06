@@ -11,7 +11,8 @@ if is_python_script:
     parser.add_argument('--data_splits_path', type=str, required=True, help='Path to data splits directory. Should contain files "train.pkl", "val.pkl", and "test.pkl"')
     parser.add_argument('--combine_train_val', action='store_true', help='Whether to combine train and validation splits')
     
-    parser.add_argument('--label_cols', type=str, required=True, help='Comma-separated list of label column names') # TODO: allow glob patterns
+    parser.add_argument('--label_cols', type=str, required=True, help='Comma-separated list of label column names')
+    parser.add_argument('--exclude_label_cols', type=str, nargs='+', default=None, help='Comma-separated list of label column names to exclude from --label_cols')
     parser.add_argument('--id_col', type=str, default='mention_id', help='Column name for unique mention IDs')
     parser.add_argument('--text_col', type=str , default='text', help='Column name for mention context text')
     parser.add_argument('--mention_col', type=str , default='mention', help='Column name for mention text')
@@ -59,6 +60,7 @@ else:
     # args.label_cols = 'economic,noneconomic'
     args.label_cols = 'economic__*'
     # args.label_cols = 'noneconomic__*'
+    args.exclude_label_cols = None  # e.g., 'economic__employment_status'
     
     args.id_col = 'mention_id'
     args.text_col = 'text'
@@ -150,6 +152,10 @@ args.data_splits_path = Path(args.data_splits_path)
 
 if isinstance(args.label_cols, str):
     args.label_cols = [col.strip() for col in args.label_cols.split(',')]
+if args.exclude_label_cols is not None:
+    if isinstance(args.exclude_label_cols, str):
+        args.exclude_label_cols = [col.strip() for col in args.exclude_label_cols.split(',')]
+    args.label_cols = [col for col in args.label_cols if col not in args.exclude_label_cols]
 
 if (args.save_eval_results or args.save_eval_predictions) and not args.train_best_model:
     raise ValueError("'save_eval_results' or 'save_eval_predictions' is set to True but 'train_best_model' is False. Cannot save evaluation results for a model that was not trained.")
@@ -218,9 +224,15 @@ for lab in args.label_cols:
     matched = fnmatch.filter(df.columns, lab)
     if matched:
         expanded_label_cols.extend(matched)
-    else:
+    elif lab in df.columns:
         expanded_label_cols.append(lab)
+    else:
+        raise ValueError(f"Label column '{lab}' not found in dataframe columns and did not match any glob patterns.")
+
 args.label_cols = expanded_label_cols
+
+# print info about label columns
+print(f"Using label columns: {args.label_cols}")
 
 
 df['labels'] = df[args.label_cols].apply(list, axis=1)

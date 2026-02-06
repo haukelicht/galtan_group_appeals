@@ -7,6 +7,7 @@ SCRIPT_NAME="./../finetune_setfit.py"
 
 TASK="economic_attributes_classification"
 LABEL_COLS="economic__*"
+EXCLUDE_LABELS="economic__class_membership,economic__ecology_of_group"
 STRATEGY="mention_text"
 
 # set data dir
@@ -27,17 +28,22 @@ fi
 echo "Finetuning model \"$BASE_MODEL\" with strategy \"$STRATEGY\" "
         
 # build the command
+# NOTE: inhp search, body/head with these hps typically stopped training 
+#  - body after 300 steps
+#  - head after 8 - 11 epochs 
+# I adjust for larger dataset here by reducing num_epochs
 cmd="python3 $SCRIPT_NAME \
     --data_splits_path \"$DATA_DIR\" \
     --combine_splits train val test \
     --label_cols \"$LABEL_COLS\" \
+    --exclude_label_cols \"$EXCLUDE_LABELS\" \
     --model_name \"$BASE_MODEL\" \
     --class_weighting_strategy inverse_proportional \
-    --num_epochs 1 4 \
-    --train_batch_sizes 16 4 \
-    --body_train_max_steps 100 \
-    --head_learning_rate 0.030 \
-    --l2_weight 0.015 \
+    --num_epochs 1 8 \
+    --train_batch_sizes 8 8 \
+    --body_train_max_steps 300 \
+    --head_learning_rate 0.003 \
+    --l2_weight 0.200 \
     --warmup_proportion 0.10 \
     --save_model \
     --save_model_to \"$MODEL_SAVE_PATH\"

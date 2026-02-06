@@ -27,17 +27,21 @@ fi
 echo "Finetuning model \"$BASE_MODEL\" with strategy \"$STRATEGY\" "
         
 # build the command
+# NOTE: inhp search, body/head with these hps typically stopped training 
+#  - body after 300 steps
+#  - head after 5 - 13 epochs 
+# I adjust for larger dataset here by reducing num_epochs
 cmd="python3 $SCRIPT_NAME \
     --data_splits_path \"$DATA_DIR\" \
     --combine_splits train val test \
     --label_cols \"$LABEL_COLS\" \
     --model_name \"$BASE_MODEL\" \
     --class_weighting_strategy inverse_proportional \
-    --num_epochs 1 4 \
+    --num_epochs 1 6 \
     --train_batch_sizes 32 4 \
-    --body_train_max_steps 75 \
+    --body_train_max_steps 300 \
     --head_learning_rate 0.010 \
-    --l2_weight 0.01 \
+    --l2_weight 0.010 \
     --warmup_proportion 0.15 \
     --save_model \
     --save_model_to \"$MODEL_SAVE_PATH\"

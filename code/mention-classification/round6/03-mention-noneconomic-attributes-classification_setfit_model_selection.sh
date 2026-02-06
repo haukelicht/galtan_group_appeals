@@ -10,7 +10,7 @@ TASK="noneconomic_attributes_classification"
 LABEL_COLS="noneconomic__*"
 STEP="model_selection"
 
-DATA_DIR="../../../data/annotations/group_mention_categorization/${STEP}/splits"
+DATA_DIR="../../../data/annotations/group_mention_categorization/splits/${STEP}"
 RESULTS_DIR="../../../results/classifiers/${TASK}/${STEP}/setfit"
 
 # create list of models to try
@@ -23,6 +23,7 @@ MODELS=(
     "google/embeddinggemma-300m"
     "Qwen/Qwen3-Embedding-0.6B"
 )
+
 
 declare -A batch_sizes
 batch_sizes=(

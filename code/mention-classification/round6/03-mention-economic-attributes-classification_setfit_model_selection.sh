@@ -10,7 +10,7 @@ TASK="economic_attributes_classification"
 LABEL_COLS="economic__*"
 STEP="model_selection"
 
-DATA_DIR="../../../data/annotations/group_mention_categorization/${STEP}/splits"
+DATA_DIR="../../../data/annotations/group_mention_categorization/splits/${STEP}"
 RESULTS_DIR="../../../results/classifiers/${TASK}/${STEP}/setfit"
 
 # create list of models to try

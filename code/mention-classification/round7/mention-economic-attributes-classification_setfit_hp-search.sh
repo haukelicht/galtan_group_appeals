@@ -17,6 +17,7 @@ RESULTS_DIR="${BASE_PATH}results/classifiers/${TASK}/${STEP}/setfit"
 #MODELS_SAVE_DIR="${BASE_PATH}models/${TASK}"
 
 # create list of models to try
+# NOTE: we focus here in the models that performed comparatively well in modle selection experiments
 MODELS=(
     "sentence-transformers/all-mpnet-base-v2"
     "nomic-ai/modernbert-embed-base"
