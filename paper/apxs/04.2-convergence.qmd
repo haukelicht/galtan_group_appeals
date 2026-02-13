@@ -1,0 +1,491 @@
+
+
+<!-- put in additional results section or so -->
+
+## Cross-validation against Thau's group category annotations  {#sec-thau_crossvalidation}
+
+We use Thau's human-annotated social group categorization data to underscore the added value of taking intersectionality into account in group mention labeling.
+The idea of intersectionality is that social group mentions often involve multiple group attributes at the same time and that from a methodological point of view, this requires multi-label classification.
+Thau's coding scheme, however, is single-label, meaning that each group mention is assigned to one and only one group category.
+
+```{python}
+# filter verbatim mentions that were assigned into multible group type categories
+thau_ambigous_labels_examples = df_thau.query('group_type == "Social group"').groupby(['mention', 'group_type']).filter(lambda x: x.group_category.nunique()>1).groupby(['mention', 'group_type'])['group_category'].agg(set).sort_index().reset_index(name='categories')
+thau_ambigous_labels_examples['categories_str'] = thau_ambigous_labels_examples['categories'].apply(lambda cats: ' + '.join(sorted(cats)))
+```
+
+```{python}
+# eval: false
+print('N =', (df_thau.group_type=="Social group").sum())
+print('N =', len(thau_ambigous_labels_examples), f'; share = {len(thau_ambigous_labels_examples)/(df_thau.group_type == "Social group").sum():0.3f}')
+```
+
+```{python}
+#| label: tbl-thau_conflicting_group_categorization_examples
+#| output: true
+#| tbl-cap: 'Examples of verbatim group mentions with conflicting group category annotations in data by Thau (2019) for category combinations that were confused more than 10 times. Each row shows (at most) three examples of verbatim group mentions that have been categorized into one of the following categories in different sentence contexts in the corpus and thus have "conflicting" labels. $N$ reports the total number of mentions that exhibit the shown category confusion (in all 3,571 mentions).'
+
+# TODO: consider moving to APPENDIX and only mention examples in text body
+
+expls_df = thau_ambigous_labels_examples.copy()
+expls_df['n_attrs'] = expls_df['categories'].apply(len)
+expls_df[['cat1', 'cat2']] = expls_df['categories'].apply(lambda cats: pd.Series(sorted(list(cats))[:2]))
+#expls_df = thau_ambigous_labels_examples[thau_ambigous_labels_examples['categories'].apply(len)==2]
+expls_df = expls_df.groupby(['categories_str']).apply(lambda x: x.assign(n=len(x)).sample(min(len(x), 3), random_state=42)).reset_index(drop=True)
+expls_df = expls_df.groupby(['categories_str', 'cat1', 'cat2', 'n_attrs', "n"]).agg({'mention': lambda x : '; '.join(f"``{m}''"for m in x)}).reset_index()
+expls_df.sort_values(['n_attrs', "n", 'categories_str'], ascending=[True, False, True])
+expls_df.drop_duplicates(['cat1', 'cat2']).query('cat1!="Other" and cat2!="Other"').reset_index(drop=True)
+tab = expls_df.query('n> 10').sort_values(['cat1', 'cat2'])
+tab = tab[['categories_str', 'n', 'mention']]
+tab.columns = ["attribute combination", "$N$", "examples"]
+latex_table(tab, column_format='p{2.2in} l p{3in}')
+```
+
+@tbl-thau_conflicting_group_categorization_examples illustrates the consequence of this annotation design choice by giving examples from Thau's data where the same verbatim identical group mentions were categorized into different categories at different times of the annotation process.
+For example, the group mention "homeless 16 and 17 year olds" has been classified as both _Economic class_ and _Age/generation_ in this data, and this label "confusion" occured for 50 group mentions in total. 
+
+Many of the examples in @tbl-thau_conflicting_group_categorization_examples are arguably clearly intersectional, such as "homeless 16 and 17 year olds" (economic status and age), "the richest and poorest areas in our country" (economic status and location or nationality), and "low income families" (economic status and family).
+In fact, about 9.4% of social group mentions in Thau's data are affected by this problem.
+
+Importantly, this observation does not indicate annotation errors _per se_.
+Instead, it illustrate why forcing a single-label classification scheme on a phenomenon that is inherently multi-dimensional can be problematic.
+Group mentions that exhibit multiple attributes, like "the richest and poorest areas in our country" (economic status and location or nationality) and "low income families" (economic status and family), are simply more accurately labeled if assigned to multiple categories _because_ they are intersectional.
+
+
+### Examples from comparison to Thau's social group category classifications
+
+Next, we zoom in on three of Thau's group categories: _Economic class_, _Age/generation_, and his _Other_ group category.
+We focus on these three for different reasons.
+The category _Economic class_ is interesting because it is an abstract, multi-facetted sociological construct that rarely manifests explicitly in social group mentions but is rather communicated through various indicators, such as occupation, income, or employment status.
+The category _Age/generation_ is interesting because it is appears conceptually more clearly delineated but is arguably an attribute-centered category in disguise, making it very prone to intersectionality with other attributes.
+The _Other_ category is interesting because it is a catch-all category that is often used for mentions that do not fit well into the other categories, and thus is likely to be highly heterogeneous and intersectional.
+
+#### Economic class
+
+```{python}
+thau_econ_class_mentions = df_thau_preds.query("group_category=='Economic class'")
+thau_econ_class_mentions['labels'] = thau_econ_class_mentions.apply(lambda row: ' + '.join([l for c, l in attribute_category_names_map.items() if row[c]==1]), axis=1)
+tmp = thau_econ_class_mentions.\
+    groupby('labels').\
+    agg({'group_type': 'count', 'mention': lambda x: list(x.sample(min(len(x), 5), random_state=1 ))}).\
+    reset_index().\
+    rename(columns={'group_type': 'count'}).\
+    sort_values('count', ascending=False)
+tmp = tmp[tmp['labels']!='']
+tmp['n_attributes'] = tmp['labels'].str.count(' \+ ')+1
+tmp['intersectional'] = tmp['n_attributes'] > 1
+tmp['examples'] = tmp['mention'].apply(lambda ms: '; '.join([f"``{m}''" for m in ms]))
+```
+
+```{python}
+cnts = tmp.groupby('intersectional').agg({'count': 'sum'})
+props = cnts / cnts.sum()
+props 
+```
+
+Having applied our multi-attribute classification approach to social group mentions categorized according to Thau's group category scheme, we estimate that about 32% of mentions in his _Economic class_ category are intersectional references.
+@tbl-thau_econ_class_mentions_single_attr_examples shows that among the 68% of single-attribute mentions in this subset, most are classified as _income/wealth/economic status_, _occupation/profession_, or _employment status_ instances in our scheme.
+
+```{python}
+#| label: tbl-thau_econ_class_mentions_single_attr_examples
+#| output: true
+#| tbl-cap: 'Social group mentions in Thau''s _Economic class_ group category that are assigned to a single attribute category according to our scheme and their absolute frequency. *Note:* Table only reports results for the six most prevalent attribute categories.'
+
+# NOTE: not sure whether we should interprete these numbers as relative prevalence of attribute co-occs
+tab = tmp.query("n_attributes == 1").head(6)[['labels', 'count', 'examples']]
+tab.columns = ["attribute category", "$N$", "examples"]
+latex_table(tab, column_format='p{2.2in} l p{3in}')
+```
+
+```{python}
+#| label: tbl-thau_econ_class_mentions_multi_attr_examples
+#| output: true
+#| tbl-cap: 'Social group mentions in Thau''s _Economic class_ that are assigned to two or more attribute categories according to our scheme and their absolute frequency. *Note:* Table only reports results for the six most prevalent attribute combinations.'
+
+# NOTE: not sure whether we should interprete these numbers as relative prevalence of attribute co-occs
+tab = tmp.query("n_attributes >= 2").head(6)[['labels', 'count', 'examples']]
+tab.columns = ["attribute combination", "$N$", "examples"]
+latex_table(tab, column_format='p{2.2in} l p{3in}')
+```
+
+However, other social group mentions in this subset of Thau's data are often labeled as combinations among these economic attributes or with other attributes,  often non-economic ones like _family_, _age_, or _place/location_.
+@tbl-thau_econ_class_mentions_multi_attr_examples shows, for example, that mentions in Thau's _economic class_ group category are often labeled as intersectional references featurin the attributes _income/wealth/economic status_ and _family_ or _employment status_ and _age_, respectively.
+
+#### Family
+
+```{python}
+thau_gender_mentions = df_thau_preds.query("group_category=='Gender'")
+thau_gender_mentions['labels'] = thau_gender_mentions.apply(lambda row: ' + '.join([l for c, l in attribute_category_names_map.items() if row[c]==1]), axis=1)
+tmp = thau_gender_mentions.\
+    groupby('labels').\
+    agg({'group_type': 'count', 'mention': lambda x: list(x.sample(min(len(x), 5), random_state=1 ))}).\
+    reset_index().\
+    rename(columns={'group_type': 'count'}).\
+    sort_values('count', ascending=False)
+tmp = tmp[tmp['labels']!='']
+tmp['n_attributes'] = tmp['labels'].str.count(' \+ ')+1
+tmp['intersectional'] = tmp['n_attributes'] > 1
+tmp['examples'] = tmp['mention'].apply(lambda ms: '; '.join([f"``{m}''" for m in ms]))
+```
+
+```{python}
+#| eval: false
+cnts = tmp.groupby('intersectional')['count'].sum()
+props = cnts / cnts.sum()
+props 
+```
+
+```{python}
+#| label: tbl-thau_gender_mentions_single_attr_examples
+#| output: true
+#| tbl-cap: 'Social group mentions in Thau''s _gender_ group category that are assigned to only one attribute category according to our scheme and their absolute frequency. *Note:* Table only reports the results for the six most prevalent attribute categories.'
+# TODO:  make this a table
+tab = tmp.query("n_attributes == 1").head(6)[['labels', 'count', 'examples']]
+
+# NOTE: this reveals some misclassifictions
+#  - "women prisoners" => also crime
+#  - "boys" => also gender/sexuality
+#  - "men who work in the public services" => also gender/sexuality
+
+tab.columns = ["attribute", "$N$", "examples"]
+latex_table(tab, column_format='p{2.2in} l p{3in}')
+```
+
+Thau's _Gender_ group category is an example where our scheme is slightly broader because it also includes the aspect of sexual orientation.
+Mentions in this subset of Thau's data that are assigned to only one attribute in our scheme (55.1%) are typically categorized as _family_ or _gender/sexuality_ instances (see @tbl-thau_gender_mentions_single_attr_examples).
+
+```{python}
+#| label: tbl-thau_gender_mentions_multi_attr_examples
+#| output: true
+#| tbl-cap: 'Social group mentions in Thau''s _gender_ group category that are assigned to two attribute categories according to our scheme and their absolute frequency. *Note:* Table only reports the results for the six most prevalent attribute combinations.'
+# TODO:  make this a table
+tab = tmp.query("n_attributes == 2").head(6)[['labels', 'count', 'examples']]
+tab.columns = ["attribute combination", "$N$", "examples"]
+latex_table(tab, column_format='p{2.2in} l p{3in}')
+```
+
+Yet, despite our gender-related category is already broader than Thau's, we still find that about 44.9% of the group mentions classified into Thau's _Gender_ category are intersectional according to our annotations.
+@tbl-thau_gender_mentions_multi_attr_examples shows that the most common attribute combinations are _family_ and _gender/sexuality_ and _occupation/profession_ + _gender/sexuality_, respectively.
+This is in parts driven by how we treat gendered references to familial roles, like father, mother, husband, wive, etc., which we consider intersectional.
+Other instances where we find intersectionality are not explained by this difference in coding appraoches, however, such as mentions that feature gender/sexuality alongside occpuation/profession ("service women"),  employment status ("women part-time workers"), or nationality ("British women married to foreign husbands").
+
+#### "Other"
+
+Another intersting point of comparison to Thau's group category classifications are mentions in his _Other_ category.
+Overall, about 22.5% of sopcial group mentions have been classified into this category by his annotators.
+
+```{python}
+#| eval: false
+(df_thau_preds.query("group_type=='Social group'").group_category=='Other').mean()
+```
+
+```{python}
+thau_other_mentions = df_thau_preds.query("group_category=='Other'")
+thau_other_mentions['labels'] = thau_other_mentions.apply(lambda row: ' + '.join([l for c, l in attribute_category_names_map.items() if row[c]==1]), axis=1)
+tmp = thau_other_mentions.\
+    groupby('labels').\
+    agg({'group_type': 'count', 'mention': lambda x: list(x.sample(min(len(x), 5), random_state=1 ))}).\
+    reset_index().\
+    rename(columns={'group_type': 'count'}).\
+    sort_values('count', ascending=False)
+tmp['n_attributes'] = tmp['labels'].str.count(' \+ ')+1
+tmp['any_attributes'] = tmp['labels']!=''
+tmp.loc[~tmp['any_attributes'], 'n_attributes'] = 0
+tmp['intersectional'] = tmp['n_attributes'] > 1
+tmp['examples'] = tmp['mention'].apply(lambda ms: '; '.join([f"``{m}''" for m in ms]))
+```
+
+```{python}
+#| eval: false
+cnts = tmp.groupby(['any_attributes', 'intersectional'])['count'].sum()
+props = cnts / cnts.sum()
+props 
+```
+
+```{python}
+#| eval: false
+cnts = tmp.query('any_attributes').groupby('intersectional')['count'].sum()
+props = cnts / cnts.sum()
+props 
+```
+
+Our multilabel attribute classification approach assings 80.8% of mentions in Thau's _Other_ category to at least one attribute in our scheme, while the remaining 19.2% of mentions in this category are not labeled as featuring any of our attributes and thus considered "universal" group references.
+As shown in @tbl-thau_other_mentions_examples, our approach thus makes 4 out of 5 mentions in Thau's general _Other_ group analytically accesible by labeling them as featuring one (71.1%) or more attributes (28.9%) in our scheme.
+
+```{python}
+#| label: tbl-thau_other_mentions_examples
+#| output: true
+#| tbl-cap: 'Social group mentions in Thau''s _gender_ group category that are assigned to two attribute categories according to our scheme and their absolute frequency. *Note:* Table only reports the results for the six most prevalent attribute combinations.'
+# TODO:  make this a table
+tab = tmp.query("n_attributes >= 1").head(6)[['labels', 'count', 'examples']]
+tab.columns = ["attribute(s)", "$N$", "examples"]
+latex_table(tab, column_format='p{2.2in} l p{3in}')
+```
+
+## Cross-validation against Horne et al.'s group category annotations  {#sec-horne_crossvalidation}
+
+To shed more light on the convergence and divergences between our attribute classification and the group categtorization scheme by @horne_using_2025, we analyze two random samples of 5,000 mentions each labeled as featuring the _occupation/profession_ attribute and mentions labeled as featuring the _gender/sexuality_ attribute, respectively.
+These samples allow us to assess convergent validity by examining whether mentions our group attribute classifiers identify as featuring occupation-related or gender-related attributes are similarly categorized by Horne et al.'s group category classifier.
+The dual classification creates overlapping annotations that reveal both areas of agreement (where both schemes identify similar patterns) and divergence (where our attribute-based approach captures distinctions not present in their categorical scheme).
+This comparison helps assessing to what extent our attribute-centered framework aligns with established categorization but also adds analytical value.
+Importantly, we examine these examples not to suggest that our classifiers have a higher accuracy but to illustrate how our attribute-centered approach seems to be better suited to accommodate interesectionality because it puts all attribute categories on the same analytical level.
+
+##### Occupation profession
+
+```{python}
+occupation_cats = [
+	'Caregivers',
+	'Civil Servants',
+	'Education Professionals',
+	'Employees And Workers',
+	'Employers And Business Owners',
+	'Farmers',
+	'Health Professionals',
+	'Investors And Stakeholders',
+	'Law Enforcement Personnel',
+	'Manual And Service Workers',
+	'Military Personnel',
+	'Politicians',
+	'Sociocultural Professionals',
+	'White Collar Workers',
+]
+
+tmp = horne_predictions_econ_occprof_attribute_sample.copy()
+```
+
+```{python}
+#| eval: false
+len(occupation_cats)
+', '.join([f"_{cat}_" for cat in occupation_cats])
+```
+
+```{python}
+#7 eval: false
+tmp[occupation_cats].any(axis=1).mean()
+```
+
+First, we focus on categories in Horne et al.'s classification scheme that capture references to specific occupational groups.
+In total, we identified 14 such categories in their scheme, ranging from _Caregivers_ to _White Collar Workers_.[^fn:horne_occupation_cats]
+
+Regarding convergence between their and our annotation scheme, we expect that our focus on occupation/profession-related attributes will lead to a high degree of overlap with mentions categorized into one or several of these categories by Horne et al.' classifiers.
+This is confirmed by our analysis, which finds that the share of mentions labeled as expressing an _occupation/profession_ attribute by our classifier that are classified into an occupation group category by Horne et al.'s classifier is 83.8% -- a high degree of correspondence.
+
+[^fn:horne_occupation_cats]: _Caregivers_, _Civil Servants_, _Education Professionals_, _Employees And Workers_, _Employers And Business Owners_, _Farmers_, _Health Professionals_, _Investors And Stakeholders_, _Law Enforcement Personnel_, _Manual And Service Workers_, _Military Personnel_, _Politicians_, _Sociocultural Professionals_, _White Collar Workers_
+
+```{python}
+vectorizer = CountVectorizer(
+    stop_words=stopwords.words('english'),
+    ngram_range=(1, 3), 
+    max_df = 0.8
+)
+
+idxs = horne_predictions_econ_occprof_attribute_sample[occupation_cats].any(axis=1)
+fw = compute_fighting_words(
+    l1=horne_predictions_econ_occprof_attribute_sample.loc[ idxs, 'text'].to_list(),
+    l2=horne_predictions_econ_occprof_attribute_sample.loc[~idxs, 'text'].to_list(),
+    cv=vectorizer,
+)
+fw_ours_vs_horne_occupation = pd.DataFrame(fw, columns=['word', 'score']).sort_values('score', ascending=False)
+```
+
+```{python}
+#| label: fig-ours_vs_horne_occupation_fighting_words
+#| output: true
+#| fig-cap: Most distinctive words for mentions labeled as featuring occupation/profession as an attribute by our classifier depending on whether by Horne et al.'S classifier has classified them into (at least) one of their occupuation/profession-related categories (left) or not (right). Values plotted are $z$-scores from "fighting words" on sample of 5000 occupation/profession mentions. Values above ±1.96 (vertical dashed line) can be considered significantly distinctive.
+
+# Get top 20 lowest (most negative) and highest (most positive) scores
+top_negative = fw_ours_vs_horne_occupation.nsmallest(20, 'score').sort_values('score', ascending=False)
+top_positive = fw_ours_vs_horne_occupation.nlargest(20, 'score').sort_values('score', ascending=True)
+
+# Create two-column layout
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4), sharey=False)
+
+# Left plot: positive scores (distinctive for classified by Horne et al.)
+ttl = r"mentions categorized by both as occupation/profession-related"
+ax1.axvline(x=1.96, color='black', linestyle='--', linewidth=0.8, zorder=1)
+ax1.barh(range(len(top_positive)), top_positive['score'], color='#1b9e77', zorder=2)
+ax1.set_yticks(range(len(top_positive)))
+ax1.set_yticklabels(top_positive['word'])
+ax1.set_xlabel('z-score', fontsize=11)
+ax1.set_title(ttl, fontweight='bold', fontsize=12)
+ax1.axvline(x=0, color='black', linestyle='-', linewidth=0.8)
+ax1.yaxis.tick_right()
+ax1.yaxis.set_label_position('right')
+plt.setp(ax1.get_yticklabels(), ha='left')
+ax1.set_xlim(0, 10)
+ax1.invert_xaxis()  # Invert to show negative values extending left
+
+# Right plot: negative scores (distinctive for NOT classified by Horne et al.)
+ttl = r"mentions categorized only by ours as occupation/profession-related"
+ax2.axvline(x=-1.96, color='black', linestyle='--', linewidth=0.8, zorder=1)
+ax2.barh(range(len(top_negative)), top_negative['score'], color='#d95f02', zorder=2)
+ax2.set_yticks(range(len(top_negative)))
+ax2.set_yticklabels(top_negative['word'])
+ax2.set_xlabel('z-score', fontsize=11)
+ax2.set_title(ttl, fontweight='bold', fontsize=12)
+ax2.set_xlim(-10, 0)
+ax2.invert_xaxis()  # Invert to show negative values extending left
+
+plt.tight_layout()
+plt.show()
+```
+
+```{python}
+#| label: tbl-ours_vs_horne_occupation_fighting_words_examples
+#| output: true
+#| tbl-cap: 'Examples of social group mentions labeled as featuring occupation/profession as an attribute by our classifier that were not assigned to any of Horne et al.''s occupation-related group categories by their classifier. Values computed by summing "fighting words" scores as weights of mentions'' tokens, normalized by number of tokens.'
+fw_lookup = {r['word']: r['score'] for r in fw_ours_vs_horne_occupation.to_dict(orient='records')}
+fw_vals = np.array([fw_lookup[f] for f in vectorizer.get_feature_names_out()])
+analyzer = vectorizer.build_analyzer()
+
+# vectorize mentions 
+mentions = horne_predictions_econ_occprof_attribute_sample[~idxs].reset_index(drop=True)
+mentions_texts = mentions['text']
+X_mentions = vectorizer.transform(mentions_texts.tolist())
+# binarize
+X_mentions[X_mentions>0] = 1
+# apply z-score values to each row in `X_mentions` as weights
+X_mentions_scores = X_mentions @ fw_vals[:, np.newaxis]
+# normalize for mention length
+X_mentions_scores /= X_mentions.sum(axis=1)
+
+mention_scores = X_mentions_scores[:, 0]
+rank = mention_scores.argsort()#[::-1]
+
+n_ = 20
+tab = horne_predictions_econ_occprof_attribute_sample.loc[~idxs, ['text', *label_cols_horne]].iloc[rank]
+tab['score'] = mention_scores[rank]
+tab = tab[tab['score']<-1.96]
+tab['text_norm'] = tab['text'].apply(lambda x: ' '.join(analyzer(x)).strip())
+tab = tab.drop_duplicates('text_norm')# .head(n_).reset_index(drop=True)
+tab = tab.sample(n_, weights=tab['score'].abs(), random_state=42)
+tab.loc[:, 'horne'] = tab.iloc[:, 1:].apply(lambda row: '; '.join([l for l in label_cols_horne if row[l]==1]), axis=1)
+tab = tab[['text', 'score', 'horne']].sort_values('score')
+tab.columns = ["Mention", "$z$-score", "Horne et al. classification"]
+# TODO: make latex table
+latex_table(tab)
+```
+
+However, we also expect that due to being more encompassing and abstract than some of Horne et al's categories, such as _Civil servants_, _Farmers_, _Health professionals_, etc., our _occupation/profession_ attribute will capture a broader set of mentions.
+We assess this question through a "fighting words" analysis [@monroe_fightin_2008], a method for identifying $n$-gram patterns that distinguish the 18% of social group mentions labeled as featuring the attribute of _occupation/profession_ by our classifier that are not classified into any of Horne et al.'s occupation-related categories.
+@fig-ours_vs_horne_occupation_fighting_words and @tbl-ours_vs_horne_occupation_fighting_words_examples show that our _occupation/profession_ classifications capture occupational and professional groups not covered by Horne et al.'s schemes, including broad categories like "experts" and "practitioners"  as well as specific categories like "drivers".
+
+##### Gender / Sexuality
+
+```{python}
+gender_sexuality_cats = [
+	'Lgbtqi',
+	'Men',
+	'Women',
+]
+
+tmp = horne_predictions_nonecon_gender_attribute_sample.copy()
+```
+
+```{python}
+#| eval: false
+tmp[gender_sexuality_cats].any(axis=1).mean()
+```
+
+Turning, to mentions that feature attributes related to gender and/or sexuality, we perform a similar cross-validation exercise by comparing their overlap with classifications into Horne et al.'s group categories _LGBTQI_, _Men_, and _Women_.
+Again, we find a high overlap between classifications.
+91.4% of mentions labeled as expressing a _gender/sexuality_ attribute by our classifier are classified into (at least) one of Horne et al.'s _LGBTQI_, _Men_, or _Women_ group categories by their classifier.
+
+```{python}
+vectorizer = CountVectorizer(
+    stop_words=stopwords.words('english'),
+    ngram_range=(1, 3), 
+    max_df = 0.8
+)
+
+idxs = horne_predictions_nonecon_gender_attribute_sample[gender_sexuality_cats].any(axis=1)
+fw = compute_fighting_words(
+    l1=horne_predictions_nonecon_gender_attribute_sample.loc[ idxs, 'text'].to_list(),
+    l2=horne_predictions_nonecon_gender_attribute_sample.loc[~idxs, 'text'].to_list(),
+    cv=vectorizer,
+)
+fw_ours_vs_horne_gender = pd.DataFrame(fw, columns=['word', 'score']).sort_values('score', ascending=False)
+```
+
+```{python}
+#| label: fig-ours_vs_horne_gender_fighting_words
+#| output: true
+#| fig-cap: Top 20 most distinctive words for gender/sexuality mentions classified by Horne et al. (right) vs. not classified (left)
+
+# Get top 20 lowest (most negative) and highest (most positive) scores
+top_negative = fw_ours_vs_horne_gender.nsmallest(20, 'score').sort_values('score', ascending=False)
+top_positive = fw_ours_vs_horne_gender.nlargest(20, 'score').sort_values('score', ascending=True)
+
+# Create two-column layout
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4), sharey=False)
+
+# Left plot: positive scores (distinctive for classified by Horne et al.)
+ttl = r"mentions categorized by both as gender/sexuality-related"
+ax1.axvline(x=1.96, color='black', linestyle='--', linewidth=0.8, zorder=1)
+ax1.barh(range(len(top_positive)), top_positive['score'], color='#1b9e77', zorder=2)
+ax1.set_yticks(range(len(top_positive)))
+ax1.set_yticklabels(top_positive['word'])
+ax1.set_xlabel('Score (z-score)', fontsize=11)
+ax1.set_title(ttl, fontweight='bold', fontsize=12)
+ax1.axvline(x=0, color='black', linestyle='-', linewidth=0.8)
+ax1.yaxis.tick_right()
+ax1.yaxis.set_label_position('right')
+plt.setp(ax1.get_yticklabels(), ha='left')
+ax1.set_xlim(0, 25)
+ax1.invert_xaxis()  # Invert to show negative values extending left
+
+# Right plot: negative scores (distinctive for NOT classified by Horne et al.)
+ttl = r"mentions categorized only by ours as gender/sexuality-related"
+ax2.axvline(x=-1.96, color='black', linestyle='--', linewidth=0.8, zorder=1)
+ax2.barh(range(len(top_negative)), top_negative['score'], color='#d95f02', zorder=2)
+ax2.set_yticks(range(len(top_negative)))
+ax2.set_yticklabels(top_negative['word'])
+ax2.set_xlabel('Score (z-score)', fontsize=11)
+ax2.set_title(ttl, fontweight='bold', fontsize=12)
+ax2.set_xlim(-25, 0)
+ax2.invert_xaxis()  # Invert to show negative values extending left
+
+plt.tight_layout()
+plt.show()
+```
+
+```{python}
+#| label: tbl-ours_vs_horne_gender_fighting_words_examples
+#| output: true
+#| tbl-cap: 'Examples of social group mentions labeled as featuring gender/sexuality as an attribute by our classifier that were not assigned to any of Horne et al.''s Men, Women, or LGBTQI categories by their classifier. Values computed by summing "fighting words" scores as weights of mentions'' tokens, normalized by number of tokens.'
+fw_lookup = {r['word']: r['score'] for r in fw_ours_vs_horne_gender.to_dict(orient='records')}
+fw_vals = np.array([fw_lookup[f] for f in vectorizer.get_feature_names_out()])
+analyzer = vectorizer.build_analyzer()
+
+# vectorize mentions 
+mentions = horne_predictions_nonecon_gender_attribute_sample[~idxs].reset_index(drop=True)
+mentions_texts = mentions['text']
+X_mentions = vectorizer.transform(mentions_texts.tolist())
+# binarize
+X_mentions[X_mentions>0] = 1
+# apply z-score values to each row in `X_mentions` as weights
+X_mentions_scores = X_mentions @ fw_vals[:, np.newaxis]
+# normalize for mention length
+X_mentions_scores /= X_mentions.sum(axis=1)
+
+mention_scores = X_mentions_scores[:, 0]
+rank = mention_scores.argsort()#[::-1]
+
+n_ = 20
+tab = horne_predictions_nonecon_gender_attribute_sample.loc[~idxs, ['text', *label_cols_horne]].iloc[rank]
+tab['score'] = mention_scores[rank]
+tab = tab[tab['score']<-1.64]
+tab['text_norm'] = tab['text'].apply(lambda x: ' '.join(analyzer(x)).strip())
+tab = tab.drop_duplicates('text_norm')#.head(n_).reset_index(drop=True)
+tab = tab.sample(n_, weights=tab['score'].abs(), random_state=1)
+tab.loc[:, 'horne'] = tab.iloc[:, 1:].apply(lambda row: '; '.join([l for l in label_cols_horne if row[l]==1]), axis=1)
+tab[['text', 'score', 'horne']].sort_values('score')
+tab = tab[['text', 'score', 'horne']].sort_values('score')
+tab.columns = ["Mention", "$z$-score", "Horne et al. classification"]
+# TODO: make latex table
+latex_table(tab, column_format='p{3in} l l')
+```
+
+However, looking at the remaining mentions that we label as _gender/sexuality_-related but not Horne et al.'s classifier, we again find interesting patterns.
+Most common are mentions including the familial role "mother" (see @fig-ours_vs_horne_gender_fighting_words), some of which combine this attribute with qualifiers  (see @tbl-ours_vs_horne_gender_fighting_words_examples).
+

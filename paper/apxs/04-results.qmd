@@ -1,0 +1,873 @@
+
+### Universal mentions analysis
+
+```{python}
+#| cache: true
+vectorizer = CountVectorizer(
+    stop_words=stopwords.words('english'),
+    ngram_range=(1, 3), 
+    max_df=0.8,
+    min_df=5
+)
+
+# Split data into universal (neither) vs. any attributes
+df["is_universal"] = ~df[label_cols].any(axis=1)
+df_universal = df[["text", "is_universal"]].copy()
+del df["is_universal"]
+
+fw_universal = compute_fighting_words(
+    l1=df_universal.loc[ df_universal["is_universal"], 'text'].tolist(),  # universal mentions
+    l2=df_universal.loc[~df_universal["is_universal"], 'text'].tolist(),  # mentions with any attributes
+    cv=vectorizer,
+)
+
+fw_universal = pd.DataFrame(fw_universal, columns=['word', 'score']).sort_values('score', ascending=False)
+```
+
+```{python}
+#| label: fig-fw_universal_mentions
+#| output: true
+#| fig-cap: 'Most distinctive words for mentions with no specific attributes (_universal_ mentions, left) vs. mentions with at least one economic or non-economic attribute (right). Values plotted are $z$-scores from "fighting words" analysis. Values above ±1.96 (vertical dashed line) can be considered significantly distinctive.'
+
+# Get top 20 lowest (most negative) and highest (most positive) scores
+top_negative = fw_universal.nsmallest(20, 'score').sort_values('score', ascending=False)
+top_positive = fw_universal.nlargest(20, 'score').sort_values('score', ascending=True)
+
+# Create two-column layout
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4), sharey=False)
+
+# Left plot: positive scores (distinctive for universal mentions)
+ttl = r"universal mentions (no specific attributes)"
+ax1.axvline(x=1.96, color='black', linestyle='--', linewidth=0.8, zorder=1)
+ax1.barh(range(len(top_positive)), top_positive['score'], color='#1b9e77', zorder=2)
+ax1.set_yticks(range(len(top_positive)))
+ax1.set_yticklabels(top_positive['word'])
+ax1.set_xlabel('z-score', fontsize=11)
+ax1.set_title(ttl, fontweight='bold', fontsize=12)
+ax1.axvline(x=0, color='black', linestyle='-', linewidth=0.8)
+ax1.yaxis.tick_right()
+ax1.yaxis.set_label_position('right')
+plt.setp(ax1.get_yticklabels(), ha='left')
+ax1.set_xlim(0, 120)
+ax1.invert_xaxis()  # Invert to show positive values extending left
+
+# Right plot: negative scores (distinctive for mentions with attributes)
+ttl = r"mentions with specific attributes"
+ax2.axvline(x=-1.96, color='black', linestyle='--', linewidth=0.8, zorder=1)
+ax2.barh(range(len(top_negative)), top_negative['score'], color='#d95f02', zorder=2)
+ax2.set_yticks(range(len(top_negative)))
+ax2.set_yticklabels(top_negative['word'])
+ax2.set_xlabel('z-score', fontsize=11)
+ax2.set_title(ttl, fontweight='bold', fontsize=12)
+ax2.set_xlim(-120, 0)
+ax2.invert_xaxis()  # Invert to show negative values extending left
+
+plt.tight_layout()
+plt.show()
+```
+
+```{python}
+#| label: tbl-fw_universal_mentions_examples
+#| output: true
+#| tbl-cap: 'Examples of _universal_ group references. Values computed by summing "fighting words" scores as weights of mentions'' tokens, normalized by number of tokens.'
+fw_lookup = {r['word']: r['score'] for r in fw_universal.to_dict(orient='records')}
+fw_vals = np.array([fw_lookup[f] for f in vectorizer.get_feature_names_out()])
+analyzer = vectorizer.build_analyzer()
+
+# vectorize mentions 
+universal_mentions = df_universal[df_universal['is_universal']].reset_index(drop=True)
+mentions_texts = universal_mentions['text']
+
+X_mentions = vectorizer.transform(mentions_texts.tolist())
+# binarize
+X_mentions[X_mentions>0] = 1
+# apply z-score values to each row in `X_mentions` as weights
+X_mentions_scores = X_mentions @ fw_vals[:, np.newaxis]
+# normalize for mention length
+X_mentions_scores /= X_mentions.sum(axis=1)
+
+universal_mentions['score'] = X_mentions_scores[:, 0]
+# rank = universal_mentions['score'].argsort()[::-1]
+
+tab = universal_mentions[universal_mentions['score']>1.96]
+tab['text_norm'] = tab['text'].apply(lambda x: ' '.join(analyzer(x)).strip())
+tab = tab.drop_duplicates('text_norm').sort_values('score', ascending=False).head(500)
+
+n_ = 20
+tab = tab.sample(n_, weights=tab['score'].abs()**2, random_state=1)
+
+tab = tab[['text', 'score']].sort_values('score', ascending=False).reset_index(drop=True)
+tab.columns = ["Mention", "$z$-score"]
+# TODO: make latex table
+latex_table(tab)
+```
+
+### Attribut prevalence
+
+```{python}
+#| label: fig-n_attrs_stats_by_family_by_country
+#| output: true
+#| fig-cap: tbd
+
+# compute average number of attributes by decade
+n_attrs_stats_by_family = df[['country_iso3c', 'party_family']].copy()
+n_attrs_stats_by_family['n_attributes'] = df[label_cols].sum(axis=1)
+n_attrs_stats_by_family = n_attrs_stats_by_family.query("party_family in ['prrp', 'green']")
+
+n_attrs_stats_by_family = n_attrs_stats_by_family.value_counts(['country_iso3c', 'party_family', 'n_attributes']).sort_index().reset_index()
+n_attrs_stats_by_family['n_attributes'] = n_attrs_stats_by_family['n_attributes'].astype(str)
+n_attrs_stats_by_family.loc[~n_attrs_stats_by_family.n_attributes.isin(["0", "1"]), "n_attributes"] = "≥2"
+n_attrs_stats_by_family['n_attributes'] = pd.Categorical(n_attrs_stats_by_family.n_attributes, categories=["0", "1", "≥2"], ordered=True)
+n_attrs_stats_by_family = n_attrs_stats_by_family.groupby(['country_iso3c', 'party_family', 'n_attributes'], observed=True).agg({'count': 'sum'}).reset_index()
+# TODO: add confidence intervals
+n_attrs_stats_by_family = n_attrs_stats_by_family.groupby(['country_iso3c', 'party_family']).apply(lambda x: x.assign(share=x['count']/x['count'].sum())).reset_index(drop=True)
+
+# Create country-specific subplots with horizontal stacked bars
+countries = sorted(n_attrs_stats_by_family['country_iso3c'].unique())
+families = ['prrp', 'green']
+family_labels = {'prrp': 'PRRP', 'green': 'Green'}
+colors = {'0': '#d73027', '1': '#fee08b', '≥2': '#1a9850'}
+attr_categories = ['0', '1', '≥2']
+
+# Calculate grid dimensions
+n_countries = len(countries)
+n_cols = 3
+n_rows = int(np.ceil(n_countries / n_cols))
+
+# Fixed panel dimensions
+panel_width = 3.5
+panel_height = 1.2
+fig, axes = plt.subplots(n_rows, n_cols, figsize=(panel_width * n_cols, panel_height * n_rows),
+                         sharey=True, sharex=True)
+axes = axes.flatten() if n_countries > 1 else [axes]
+
+# Plot each country in its own subplot
+for idx, country in enumerate(countries):
+    ax = axes[idx]
+    
+    # Get data for this country
+    country_data = n_attrs_stats_by_family[n_attrs_stats_by_family['country_iso3c'] == country]
+    
+    # Set up y positions for the two party families
+    y_pos = np.arange(len(families))
+    bar_height = 0.6
+    
+    # Plot each party family as a separate bar
+    for fam_idx, fam in enumerate(families):
+        fam_data = country_data[country_data['party_family'] == fam]
+        
+        # Stack attribute categories horizontally
+        left_offset = 0
+        for attr_cat in attr_categories:
+            subset = fam_data[fam_data['n_attributes'] == attr_cat]
+            share = subset['share'].values[0] if len(subset) > 0 else 0
+            
+            ax.barh(y_pos[fam_idx], share, bar_height, left=left_offset,
+                   color=colors[attr_cat], edgecolor='white', linewidth=0.5,
+                   label=attr_cat if idx == 0 and fam_idx == 0 else None)
+            
+            # Add percentage annotation if share is > 5%
+            if share > 0.05:
+                ax.text(left_offset + share/2, y_pos[fam_idx], f'{share:.0%}',
+                       ha='center', va='center', fontsize=7, fontweight='bold',
+                       color='white' if attr_cat in ['0', '≥2'] else 'black')
+            
+            left_offset += share
+    
+    # Customize subplot
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels([family_labels[fam] for fam in families], fontsize=8)
+    ax.set_xlim(0, 1.0)
+    ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{x:.0%}'))
+    ax.set_title(country, fontsize=9, fontweight='bold', pad=3)
+    ax.grid(axis='x', alpha=0.2, linestyle='--')
+    
+    # Add x-label only for bottom row
+    if idx >= (n_rows - 1) * n_cols:
+        ax.set_xlabel('Share', fontsize=8)
+
+# Remove extra subplots
+for idx in range(n_countries, len(axes)):
+    fig.delaxes(axes[idx])
+
+# Add overall legend
+if n_countries > 0:
+    from matplotlib.patches import Patch
+    legend_elements = [Patch(facecolor=colors[cat], label=cat) for cat in attr_categories]
+    fig.legend(handles=legend_elements, title='Attributes', loc='upper center', 
+              ncol=3, frameon=True, fontsize=8, bbox_to_anchor=(0.5, 1.0))
+
+plt.tight_layout(rect=[0, 0, 1, 0.98])
+plt.show()
+```
+
+```{python}
+#| lable: fig-prevalence_by_family_w_mainstream
+#| output: true
+#| fig-cap: 'Prevalence of economic and non-economic group attributes in social group mentions in mainstream party manifestos (Conservative and Social Democratic) compared to PRR and Green parties. Bars show share of mentions containing each attribute, with 95% confidence intervals.'
+
+# Filter to 4 countries with mainstream party data
+countries_4 = ['SWE', 'DEU', 'GBR'] # TODO: consider adding USA
+df_4countries = df_any[df_any['country_iso3c'].isin(countries_4)].copy()
+
+# Compute prevalence by party family for all families
+econ_all_fam = compute_prevalence(df_4countries, econ_attrs[2:], group_by='party_family')
+nonecon_all_fam = compute_prevalence(df_4countries, nonecon_attrs, group_by='party_family')
+
+# Map to readable names
+econ_all_fam['attribute'] = econ_all_fam['attribute'].map(attribute_category_names_map)
+nonecon_all_fam['attribute'] = nonecon_all_fam['attribute'].map(attribute_category_names_map)
+
+# Verify CI bounds
+assert econ_all_fam.query("prevalence < ci_low | prevalence > ci_high").empty
+assert nonecon_all_fam.query("prevalence < ci_low | prevalence > ci_high").empty
+
+# Plot settings for all party families
+all_fam_order = ['con', 'sd', 'prrp', 'green']
+all_fam_palette = {
+    'con': '#377eb8',      # Blue for conservatives
+    'sd': '#e41a1c',       # Red for social democrats
+    'prrp': '#d95f02', 
+    'green': '#1b9e77',
+}
+
+# Prepare subplot layout with dynamic heights
+n_econ = econ_all_fam['attribute'].nunique()
+n_nonecon = nonecon_all_fam['attribute'].nunique()
+fig_height = 0.50 * n_econ + 0.50 * n_nonecon + 2.5
+fig, axes = plt.subplots(
+    nrows=2,
+    ncols=1,
+    figsize=(6, fig_height*0.97),
+    gridspec_kw={'height_ratios': [n_econ, n_nonecon]},
+    dpi=200
+)
+
+# Plot using the generalized function
+plot_prevalence_bars(
+    econ_all_fam,
+    axes[0],
+    'Economic attributes',
+    hue_col='party_family',
+    hue_order=all_fam_order,
+    palette=all_fam_palette
+)
+
+plot_prevalence_bars(
+    nonecon_all_fam,
+    axes[1],
+    'Non-economic attributes',
+    hue_col='party_family',
+    hue_order=all_fam_order,
+    palette=all_fam_palette
+)
+
+# Add shared legend below the lower plot
+handles = [plt.Rectangle((0,0),1,1, fc=all_fam_palette[fam]) for fam in all_fam_order]
+labels = ['Conservative', 'Social Democratic', 'PRRP', 'Green']
+fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.6, -0.03), ncol=4, frameon=False)
+
+plt.tight_layout()
+plt.show()
+```
+
+```{python}
+fam_ts = df_any[df_any['party_family'].isin(['prrp', 'green'])].copy()
+fam_ts['decade'] = (fam_ts['year'] // 10)*10
+
+plot_data = compute_prevalence(fam_ts, attribute_category_names_map, group_by=['party_family', 'decade'])
+plot_data['attribute_label'] = plot_data['attribute'].map(attribute_category_names_map)
+
+upper_y = plot_data.groupby('attribute')['ci_high'].max()
+upper_y = round(upper_y * 1.075, 2)
+upper_y = dict(upper_y)
+```
+
+```{python}
+#| label: fig-prevalence_trends_economic
+#| output: true
+#| fig-cap: 'Temporal trends in the prevalence of economic attributes in social group mentions by PRR and Green parties across decades. Each panel shows one economic attribute category, with error bars representing 95% confidence intervals. Lines show the share of mentions containing each attribute over time.'
+
+these = econ_attrs[2:]
+
+heights = [upper_y[a] for a in these]
+heights /= sum(heights)
+
+fig, axes = plt.subplots(len(these), 1, figsize=(6, 1.5 * len(these)), sharex=True, height_ratios=heights)
+for attr_to_plot, ax in zip(these, axes):
+
+    attr_ts = plot_data[plot_data['attribute'] == attr_to_plot].copy()
+
+    palette_ts = {'prrp': '#d95f02', 'green': '#1b9e77'}
+
+    for fam, sub in attr_ts.groupby('party_family'):
+        if sub.empty:
+            continue
+        sub.sort_values('decade', inplace=True)
+        yerr = np.vstack([sub['prevalence'] - sub['ci_low'], sub['ci_high'] - sub['prevalence']])
+        ax.errorbar(
+            sub['decade'],
+            sub['prevalence'],
+            yerr=yerr,
+            fmt='o-',
+            color=palette_ts[fam],
+            label=fam,
+            capsize=0,
+            linewidth=1.5,
+            markersize=5,
+        )
+    ax.set_ylim(0, round(upper_y[attr_to_plot] * 1.15, 2))
+    ax.set_title(attribute_category_names_map[attr_to_plot], fontweight='bold')
+    ax.grid(True, axis='y', alpha=0.3)
+
+    ax.set_ylabel("Prevalence")
+    ax.set_xlabel('Decade')
+
+
+# add a manual legend below the last plot (using only dot, not line)
+handles = [plt.Rectangle((0, 0), 1, 1, color=palette_ts[fam], label=fam) for fam in palette_ts]
+labels = ['PRR parties', 'Green parties']
+fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, -0.05), ncol=2, frameon=False)
+
+fig.tight_layout()
+```
+
+```{python}
+#| label: fig-prevalence_trends_noneconomic
+#| output: true
+#| fig-cap: 'Temporal trends in the prevalence of economic attributes in social group mentions by PRR and Green parties across decades. Each panel shows one economic attribute category, with error bars representing 95% confidence intervals. Lines show the share of mentions containing each attribute over time.'
+
+
+these = [a for a in nonecon_attrs if a not in ("noneconomic__ethnicity", "noneconomic__religion")]
+
+heights = [upper_y[a] for a in these]
+heights /= sum(heights)
+
+palette_ts = {'prrp': '#d95f02', 'green': '#1b9e77'}
+
+fig, axes = plt.subplots(len(these), 1, figsize=(6, 1.5 * len(these)), sharex=True, height_ratios=heights)
+for attr_to_plot, ax in zip(these, axes):
+
+    attr_ts = plot_data[plot_data['attribute'] == attr_to_plot].copy()
+
+
+    for fam, sub in attr_ts.groupby('party_family'):
+        sub = sub.query("prevalence >= 0.01")
+        if sub.empty:
+            continue
+        sub.sort_values('decade', inplace=True)
+        yerr = np.vstack([sub['prevalence'] - sub['ci_low'], sub['ci_high'] - sub['prevalence']])
+        ax.errorbar(
+            sub['decade'],
+            sub['prevalence'],
+            yerr=yerr,
+            fmt='o-',
+            color=palette_ts[fam],
+            label=fam,
+            capsize=0,
+            linewidth=1.5,
+            markersize=5,
+        )
+    ax.set_ylim(0, round(upper_y[attr_to_plot] * 1.15, 2))
+    ax.set_title(attribute_category_names_map[attr_to_plot], fontweight='bold')
+    ax.grid(True, axis='y', alpha=0.3)
+
+    ax.set_ylabel("Prevalence")
+ax.set_xlabel('Decade')
+
+
+# add a manual legend below the last plot (using only dot, not line)
+handles = [plt.Rectangle((0, 0), 1, 1, color=palette_ts[fam], label=fam) for fam in palette_ts]
+labels = ['PRR parties', 'Green parties']
+fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, -0.05), ncol=2, frameon=False)
+
+fig.tight_layout()
+```
+
+### Co-occurrence analysis
+
+#### normalized PMI
+
+We analyze which attributes co-occur more or less than expected under independence using Pointwise Mutual Information (PMI).
+In particular, we report _normalized_ PMI (nPMI) estimates.
+nPMI valies indicate the strength of (dis)association of two random variables (here: attributes) in the theoretical range -1 to +1, such that a value of +1 (-1) arises when a given attribute pair always (never) co-occurs and 0 indicates chance-like co-occurrence.
+
+```{python}
+#| label: fig-
+
+# Visualize nPMI matrix in two panels (economic vs non-economic attributes)
+npmi_renamed = npmi_all.rename(index=attribute_category_names_map, columns=attribute_category_names_map)
+
+econ_attr_names = [attribute_category_names_map[a] for a in econ_attrs[2:]]
+nonecon_attr_names = [attribute_category_names_map[a] for a in nonecon_attrs]
+
+# Use plot_heatmap function
+fig, axes = plot_heatmap(
+    x=npmi_renamed,
+    panel_groups=[econ_attr_names, nonecon_attr_names],
+    mask_diagonal=True,
+    clegend_title='nPMI (normalized association)',
+)
+plt.show()
+```
+
+```{python}
+# pivot longer:
+npmi_values = npmi_renamed.copy()
+# set upper triangle and diagonal to NaN to avoid duplicates
+npmi_values.values[np.triu_indices_from(npmi_values.values)] = np.nan
+npmi_values = npmi_values.reset_index().melt(id_vars='attr_a', var_name='attr_b', value_name='value')
+npmi_values.dropna(subset=['value'], inplace=True)
+npmi_values.sort_values('value', ascending=False, inplace=True)
+pd.concat([npmi_values.head(5).reset_index(drop=True), npmi_values.tail(5).reset_index(drop=True)])
+```
+
+The first observation that stands out in Fig `X` is that many nPMI values are negative in our data.
+This is expected for two reasons.
+First, the average group mention features only one attribute.
+This makes co-occurrences statistically very unlikely in our data so that we typically observe fewer attribute co-occurrences  than would be expected under statistical independence.
+Second, parties don't "throw dice" when choosing whether and, if so, which attributes to combine when referring to or describing a social group in their election programs.
+For one, prevalent cultural associations and thematic context likely act as socio-linguistics constraints on parties discoursive choices, limiting their ability
+For another, within these constraints, parties should use group mentions to their strategic advantage.
+Importantly, association and disassociation are both rhetoric instruments of strategic political communication.
+
+Against this backdrop, values in Fig `X` should be analyzed in relative terms and keeping in mind differences in attributes' probability to be used alone (i.e., in single-attribute mentions, see Fig `X`).
+For example, religion occurs relatively infrequently in group mentions in our data. 
+Moreover, it is the non-economic attribute that appears least frequently on its own (it is combined 60% with at least one other attribute).
+When used, it is most likely to co-occur with ethnicity and least likely to co-occur with employment status or income etc..
+
+```{python}
+attribute_name2id = {v: k for k, v in attribute_category_names_map.items()}
+```
+
+```{python}
+# Create DataFrame with top 10 nPMI combinations and example mentions
+top_npmi_examples = []
+
+for i, row in npmi_values.query("value > 0.1").head(10).iterrows():
+    # Get attribute IDs from readable names
+    a = attribute_name2id.get(row['attr_a'], None)
+    b = attribute_name2id.get(row['attr_b'], None)
+    
+    if a is None or b is None:
+        continue
+    
+    # Find mentions where both attributes are present
+    idxs = df[[a, b]].apply(lambda col: binarize_column(col), axis=0).sum(axis=1) == 2
+    n_examples = min(5, idxs.sum())
+    
+    # Sample random examples
+    examples = df.loc[idxs].sample(n=n_examples, random_state=42)['text'].tolist()
+    
+    # Pad with None if fewer than 5 examples
+    while len(examples) < 5:
+        examples.append(None)
+    
+    # Create row
+    example_row = {
+        'attr_a': row['attr_a'],
+        'attr_b': row['attr_b'],
+        'npmi': row['value'],
+        'ex1': examples[0],
+        'ex2': examples[1],
+        'ex3': examples[2],
+        'ex4': examples[3],
+        'ex5': examples[4]
+    }
+    
+    top_npmi_examples.append(example_row)
+
+# Create DataFrame
+df_top_npmi_examples = pd.DataFrame(top_npmi_examples)
+df_top_npmi_examples
+```
+
+**Strong positive associations (green cells, nPMI > 0.4)** indicate that when parties mention groups with one attribute, they systematically combine it with another:
+The strongest association is between *place/location* and *religion* (nPMI = 0.65), suggesting parties often characterize religious groups by geographic identity (e.g., "Muslims in our cities").
+*Ethnicity* and *religion* also strongly co-occur (nPMI = 0.54), reflecting how parties conflate ethnic and religious identities in their group appeals.
+Among economic attributes, *income/wealth/economic status* and *employment status* co-occur (nPMI = 0.44), indicating parties link material conditions to labor market position.
+*Ecology of group* and *shared values/mentalities* associate positively (nPMI = 0.41), suggesting parties frame group characteristics through both environmental and ideological lenses.
+*Age* and *family* co-occur (nPMI = 0.36), as parties often connect generational identities to family structures.
+
+**Strong negative associations (magenta cells, nPMI < -0.6)** reveal systematic mutual exclusion, where attributes rarely appear together:
+*Ecology of group* shows strong negative associations with multiple attributes including *family* (-0.75), *education level* (-0.70), *class membership* (-0.66), and *ethnicity* (-0.66), suggesting ecological characterizations constitute a distinct mode of group appeals that excludes other dimensions.
+*Gender/sexuality* and *class membership* are mutually exclusive (-0.74), indicating parties rarely combine gender/sexual identity with class-based characterizations.
+Economic status dimensions avoid religious characterizations: *income/wealth/economic status* ↔ *religion* (-0.71) and *employment status* ↔ *place/location* (-0.72).
+*Ethnicity* and *class membership* rarely co-occur (-0.68), suggesting parties treat ethnic and class identities as alternative frames rather than intersecting dimensions.
+
+**Implications for party communication strategies:**
+These patterns reveal that parties employ distinct "templates" for group characterization: religious-geographic appeals, economic-material appeals, and ecological-values appeals operate largely independently.
+The mutual exclusion of gender/sexuality from economic attributes suggests parties compartmentalize identity politics and economic grievances rather than acknowledging their intersection.
+The strong positive associations indicate established discursive shortcuts: when parties invoke certain attributes, they predictably combine them with specific others, reflecting broader cultural associations (e.g., ethnicity-religion) or analytical frameworks (e.g., income-employment).
+The systematic avoidance of certain combinations (e.g., ecology with class, gender with economic status) points to blind spots in how parties conceptualize group diversity, potentially missing important intersectional identities like working-class women or economically marginalized ethnic minorities.
+
+#### Party family comparison: PRRP vs Green
+
+We argue that intersectionality in parties' group mentions is an interesting facet of their group focus strategies.
+In this context, the question arises how to compare interesectionality patterns between groups.
+In our analysis, a key question along this line is whether PRR vs. Green parties combine attributes differently?
+
+There are multiple ways to quantify and compare attribute co-occurrence patterns.
+Each approach has its strengths and weaknesses.
+Below, we discuss four possible approaches and provide recommendations for their use.
+
+- **Comparing conditional probabilities**:
+    We can compute $\Pr(\text{attribute B} \mid \text{attribute A})$ by party family and compare the values.
+    Conditional probabilities have the advantage that they are very interpretable, allowing statements like "When PRRP mentions class, 12% also mention gender."
+    They thus directly answers substantive questions about co-occurrence patterns.
+    Further, they do not suffer from base rate sensitivity issues like the PMI (see below).
+    Subtracting the values for Green parties from thjose for PRR parties, for example, we obtain an indicator that is negative if PRR parties tend to combine the given attributs more frequently.
+    Conditional probability differences can thus be compared across parties through simple subtraction, and the approach works well even with sparse data.
+    
+    The downside is that the measure is asymmetric, requiring careful interpretation. 
+    Further, it does not account for statistical significance of observed differences.
+    
+    We therefore use it solely for _descriptive_ comparison of party families' attribute combination strategies.
+
+- **Comparing statistical significance**:
+    We can apply $\chi^2$ or Fisher's exact tests for each attribute pair to determine whether co-occurrence patterns differ significantly between party families.
+    These tests provide formal hypothesis testing and control for sampling variability. 
+    Effect size measures, such as Cramér's $V$, in turn, allow assessing practical significance beyond mere statistical significance.
+    <!-- , and Fisher's exact test works reliably even with small cell counts. -->
+    
+    However, multiple comparison problems arise when testing many pairs simultaneously, requiring correction procedures like Bonferroni adjustment. 
+    The tests are also sensitive to sample size, meaning that with large N, nearly everything becomes statistically significant. 
+    Further, binary yes/no decisions do not capture the magnitude of differences.
+    
+    We therefore use significance testing for determining which attribute pair differences are statistically robust.
+
+- **Comparing normalized Pointwise Mutual Information (nPMI)**:
+    We can compute nPMI values by party family, which compare observed to expected co-occurrence under statistical independence.
+    nPMI identifies unexpected patterns in both directions (positive associations where attributes co-occur more than expected, and negative associations where they co-occur less than expected). 
+    Being normalized to a [-1, +1] scale, it allows comparing different attribute pairs.
+    This makes the nPMI metric useful for exploratory analysis.
+    
+    However, the measure is hard to interpret substantively in terms of party strategy. 
+    It is sensitive to base rates, and negative values tend to dominate in sparse data (as we observed in our analysis). 
+    Additionally, differences between parties can be small even when the underlying patterns differ substantially.
+    
+    We therefore use nPMI primarily for identifying which attribute pairs warrant further investigation.
+
+<!--
+We therefore adopt the following workflow:
+
+1. **Describe** combination patterns using conditional probabilities
+   - P(B|A) tables by party
+   - Visualize top differences
+
+2. **Test** robustness using significance tests
+   - $\chi^2$ for frequent pairs
+   - Fisher's exact for rare pairs
+   - Bonferroni correction for multiple comparisons
+
+3. **Explore** unexpected patterns using nPMI
+   - Identify strong positive associations (intersectional frames)
+   - Identify strong negative associations (strategic compartmentalization)
+
+4. **Interpret** in substantive context
+   - Link to party ideology
+   - Consider manifesto genre constraints
+   - Examine qualitative examples
+-->
+
+##### Statistical significance of co-occurrence differnces
+
+We report differences between PRR and Green parties' attribute co-mentioning patterns as a way to understand how these two party families' group focus strategies differ through the lense of intersectionality.
+Below, we report the results of $\chi^2$ tests that assess whether observed differences in parties co-mentioning patterns are statistically significant.
+Further, we rely on Cramér's $V$ to the practical significance of these differences -- if any.
+Cramér's $V$ measures association strength between two categorical variables, ranging from 0 to 1, where 0 indicats no association (complete independence) and 1 perfect association (complete dependence).
+
+
+@fig-attribute_association_differences shows that Cramér's $V$ estimates for attribute combinations with significant differences in party families' co-occurrence patterns (according to $\chi^2$-tests) range from 0.006 to 0.054.
+Values in this range are commonly interpreted as very weak (Cohen, 1988).
+In particular, this means that even the "strongest" difference (_occupation/profession_	$\times$ _nationality_) explains less than 0.2% of variance. 
+
+This understcores that statistical significance does not equate practical significance.
+While the $\chi^2$-tests found the differences for the examined attribute combinations to be statistically significant (p < 0.05), the actual strength of association is very weak.
+However, it is important to recall that most mentions in our data have no or only one attribute.
+This makes our attribute co-occurrence data very sparse.
+Therefore, even small $V$ values can represent meaningful political choices.
+Yet, intersectionality patterns _alone_ do not produce strong separation between party families.
+
+```{python}
+def test_cooccurrence_difference(df_party1, df_party2, attr_a, attr_b):
+    """
+    Test if co-occurrence of attr_a and attr_b differs between two party groups.
+    Returns chi2 statistic, p-value, and effect size (Cramér's V)
+    """
+    # Create 2x2 contingency table:
+    # Row 1: PRRP [both present, not both present]
+    # Row 2: Green [both present, not both present]
+    both_p1 = int((df_party1[attr_a] & df_party1[attr_b]).sum())
+    not_both_p1 = int(len(df_party1) - both_p1)
+    both_p2 = int((df_party2[attr_a] & df_party2[attr_b]).sum())
+    not_both_p2 = int(len(df_party2) - both_p2)
+    
+    contingency = np.array([
+        [both_p1, not_both_p1],
+        [both_p2, not_both_p2]
+    ])
+    
+    # Use Fisher's exact test for small cell counts
+    if np.any(contingency < 5):
+        _, p = fisher_exact(contingency)
+        chi2 = np.nan
+    else:
+        try:
+            chi2, p, dof, expected = chi2_contingency(contingency)
+        except ValueError:
+            # Expected frequencies too small
+            _, p = fisher_exact(contingency)
+            chi2 = np.nan
+    
+    # Cramér's V effect size
+    n = contingency.sum()
+    if not np.isnan(chi2):
+        min_dim = min(contingency.shape) - 1
+        cramers_v = np.sqrt(chi2 / (n * min_dim)) if n > 0 and min_dim > 0 else 0
+    else:
+        cramers_v = np.nan
+    
+    return chi2, p, cramers_v, contingency
+```
+
+```{python}
+# gather test results for _all_ attribute combinations in a data frame
+chi2_test_results = []
+
+# create attribute combinations (ignoring ordering)
+attr_combinations = combinations(all_attrs, 2)
+for attr_a, attr_b in attr_combinations:
+    chi2, p, v, cont = test_cooccurrence_difference(df_prrp, df_green, attr_a, attr_b)
+    
+    name_a = attribute_category_names_map[attr_a]
+    name_b = attribute_category_names_map[attr_b]
+    
+    prrp_rate = cont[0,0] / cont[0].sum() * 100
+    green_rate = cont[1,0] / cont[1].sum() * 100
+    
+    chi2_test_results.append({
+        'attribute_a': name_a,
+        'attribute_b': name_b,
+        'chi2': chi2,
+        'p_value': p,
+        'cramers_v': v,
+        'prrp_rate': prrp_rate,
+        'green_rate': green_rate,
+        'significant': p < 0.05
+    })
+
+chi2_results_df = pd.DataFrame(chi2_test_results)
+```
+
+```{python}
+#| label: fig-attribute_association_differences
+#| output: true
+#| fig-cap: 'Substantive significance of differences in attribute co-occurrence patterns between PRR and Green parties. Heatmap cells show Cramér''s V effect size for attribute pairs where co-occurrence significantly differs between the two party families (Chi-square test, p < 0.05). *Note:* Values on the diagonal are masked.'
+
+chi2_results_df['value'] = chi2_results_df['cramers_v']
+chi2_results_df.loc[~chi2_results_df['significant'], 'value'] = np.nan
+heatmap_data = chi2_results_df.pivot_table(
+    index='attribute_a',
+    columns='attribute_b',
+    values='value'
+)
+
+fig, axes = plot_heatmap(
+    x=heatmap_data,
+    panel_groups=(econ_attr_names, nonecon_attr_names),
+    mask_diagonal=True,
+    cmap='YlOrRd',
+    clims=(0, 0.1),
+    clegend_title="Cramér's V"
+)
+plt.show()
+```
+
+```{python}
+chi2_results_df.query('significant == True')['cramers_v'].describe()[["min", "max"]]
+chi2_results_df.query('significant == True').sort_values('cramers_v', ascending=False).head(1)
+```
+
+The **rate** values represent the **co-occurrence rate** - the percentage of mentions from each party family that contain **both** attributes in the pair.
+
+From the code:
+
+
+```{python}
+#| eval: false
+# Prepare data for dodged barplot of top-10 significant contrasts
+sig_df = chi2_results_df.query('significant == True').sort_values('chi2', ascending=False).head(20).copy()
+
+# Create combination labels
+sig_df['combination'] = sig_df['attribute_a'] + ' × ' + sig_df['attribute_b']
+
+# Reshape to long format using melt
+plot_df = sig_df.melt(
+    id_vars=['combination', 'chi2', 'p_value', 'cramers_v'], 
+    value_vars=['prrp_rate', 'green_rate'], 
+    var_name='party', 
+    value_name='rate'
+)
+
+# Clean up party labels
+plot_df['Party'] = plot_df['party'].map({'prrp_rate': 'PRRP', 'green_rate': 'Green'})
+
+# Create dodged horizontal barplot
+fig, ax = plt.subplots(figsize=(12, 6))
+
+sns.barplot(
+    data=plot_df,
+    y='combination',
+    x='rate',
+    hue='Party',
+    palette={'PRRP': '#8B4513', 'Green': '#2E8B57'},
+    ax=ax,
+    orient='h'
+)
+
+ax.set_xlabel('Co-occurrence Rate (%)', fontsize=11)
+ax.set_ylabel('Attribute Combination', fontsize=11)
+ax.set_title('Top 10 Significant Differences in Attribute Co-occurrence\n(PRRP vs. Green Parties)', fontsize=12, fontweight='bold')
+ax.legend(title='Party Family', frameon=True, loc='lower right')
+ax.grid(axis='x', alpha=0.3, linestyle='--')
+
+# Add brackets and Cramér's V annotations
+from matplotlib.patches import FancyBboxPatch
+import matplotlib.patches as mpatches
+
+# Get bar positions
+bar_height = 0.4  # approximate height of each bar in the pair
+clip_length = 0.08  # length of horizontal clips
+
+# Add vertical brackets and annotations for each pair
+for i, (idx, row) in enumerate(sig_df.iterrows()):
+    y_pos = i
+    cramers_v = row['cramers_v']
+    
+    # Get the maximum rate value for this combination (max of PRRP and Green)
+    max_rate = max(row['prrp_rate'], row['green_rate'])
+    
+    # Position bracket to the right of the larger bar
+    bracket_x = max_rate + 0.3
+    
+    # Draw vertical bracket line
+    ax.plot([bracket_x, bracket_x], [y_pos - bar_height/2, y_pos + bar_height/2], 
+            'k-', linewidth=1, clip_on=False)
+    # Top horizontal clip (pointing left towards zero)
+    ax.plot([bracket_x - clip_length, bracket_x], [y_pos - bar_height/2, y_pos - bar_height/2], 
+            'k-', linewidth=1, clip_on=False)
+    # Bottom horizontal clip (pointing left towards zero)
+    ax.plot([bracket_x - clip_length, bracket_x], [y_pos + bar_height/2, y_pos + bar_height/2], 
+            'k-', linewidth=1, clip_on=False)
+    
+    # Add Cramér's V text (horizontal orientation)
+    ax.text(bracket_x + 0.1, y_pos, f'V={cramers_v:.3f}', 
+            rotation=0, va='center', ha='left', fontsize=8, clip_on=False)
+
+plt.tight_layout()
+plt.show()
+```
+
+#### Sentence-Level analysis
+
+::: {.callout-warning}
+
+The sentence-level analysis reveals why **mention-level is the more appropriate unit**:
+
+**Problem with Sentence-Level Aggregation:**
+1. **Conflates distinct references**: A sentence can contain multiple group mentions with different attributes. Example: *"We support workers [class] and immigrant families [ethnicity+family]"* → sentence gets tagged with all 3 attributes, but no single group has this combination.
+
+2. **Inflates co-occurrence**: Aggregating to sentence level mechanically increases attribute density (1.25 → 1.47 attributes/unit), artificially creating "co-occurrences" that don't represent actual intersectional framing.
+
+3. **Dilutes strategic signals**: The shift from -0.12 to -0.03 mean nPMI and reduction in strong patterns (60 → 12 pairs) isn't revealing "more intersectionality"—it's masking the strategic compartmentalization by pooling unrelated mentions.
+
+**Why Mention-Level Captures the Phenomenon:**
+- Each mention targets a specific group with specific attribute(s)
+- Co-occurrence at mention level = intentional intersectional framing
+- Negative associations = strategic avoidance of combining certain dimensions
+- The 0.92 attributes/mention reflects genuine sparsity in how parties construct group identities
+
+**Analogy**: Analyzing sentences is like measuring ingredient combinations by looking at whole recipes rather than individual dishes. You'd incorrectly conclude that restaurants serve "chocolate-garlic-salmon" combinations when really they're separate dishes on different pages of the menu.
+
+**Conclusion**: The mention-level analysis correctly identifies that parties predominantly construct single-dimension group appeals. Sentence-level aggregation obscures this finding without providing theoretical or substantive advantages.
+
+:::
+
+```{python}
+# Aggregate attributes to sentence level
+# A sentence has attribute X if ANY mention in that sentence has attribute X
+
+# First, work with the filtered dataset (mentions with attributes)
+df_sent = df_with_attrs.copy()
+
+# Group by sentence_id and aggregate attributes using max (binary OR operation)
+# This means: sentence has attribute if any mention in it has that attribute
+attr_cols = econ_attrs + nonecon_attrs
+
+# Aggregate to sentence level - take max across all mentions in the sentence
+sent_attrs = df_sent.groupby('sentence_id')[attr_cols].max()
+
+# Also carry over metadata (take first value per sentence)
+metadata_cols = ['country_iso3c', 'party_id', 'party_name', 'party_family', 'date', 'year', 'manifesto_id']
+sent_metadata = df_sent.groupby('sentence_id')[metadata_cols].first()
+
+# Combine
+df_sent_level = pd.concat([sent_metadata, sent_attrs], axis=1)
+
+# Check attribute distribution at sentence level
+sent_attr_counts = sent_attrs.sum(axis=1)
+```
+
+```{python}
+# Compute sentence-level nPMI for all sentences
+assoc_sent_all = compute_attribute_associations(df_sent_level, econ_attrs + nonecon_attrs)
+npmi_sent_all = assoc_sent_all["npmi"]
+```
+
+```{python}
+# Create 2-panel heatmap (economic / non-economic on y-axis)
+npmi_sent_renamed = npmi_sent_all.rename(index=attribute_category_names_map, columns=attribute_category_names_map)
+# TODO: set diagonal to NaN
+
+fig, axes = plot_heatmap(
+    x=npmi_sent_renamed,
+    panel_groups=[econ_attr_names, nonecon_attr_names],
+    mask_diagonal=True,
+    clegend_title='nPMI (normalized association)',
+)
+axes[0].set_ylabel("economic\n", fontweight='bold')
+axes[1].set_ylabel("non-economic\n", fontweight='bold')
+plt.show()
+```
+
+```{python}
+# Filter to PRRP and Green sentences
+df_sent_prrp = df_sent_level[df_sent_level['party_family'] == 'prrp']
+df_sent_green = df_sent_level[df_sent_level['party_family'] == 'green']
+
+# Compute party-specific nPMI at sentence level
+assoc_sent_prrp = compute_attribute_associations(df_sent_prrp, econ_attrs + nonecon_attrs)
+assoc_sent_green = compute_attribute_associations(df_sent_green, econ_attrs + nonecon_attrs)
+
+npmi_sent_prrp = assoc_sent_prrp["npmi"]
+npmi_sent_green = assoc_sent_green["npmi"]
+```
+
+```{python}
+npmi_sent_diffs = npmi_sent_green - npmi_sent_prrp
+
+npmi_sent_diffs.rename(index=attribute_category_names_map, columns=attribute_category_names_map, inplace=True)
+
+# Use plot_heatmap function
+r_ = 1
+fig, axes = plot_heatmap(
+    x=npmi_sent_diffs,
+    panel_groups=[econ_attr_names, nonecon_attr_names], 
+    mask_diagonal=True,
+    clims=(-r_, +r_),
+    cmin=0.01,
+    clegend_title="nPMI difference (Green – PRR parties)"
+)
+```
+

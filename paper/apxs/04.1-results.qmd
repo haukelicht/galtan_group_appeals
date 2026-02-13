@@ -1,0 +1,370 @@
+
+## Universal group references
+
+```{python}
+#| cache: true
+vectorizer = CountVectorizer(
+    stop_words=stopwords.words('english'),
+    ngram_range=(1, 3), 
+    max_df=0.8,
+    min_df=5
+)
+
+# Split data into universal (neither) vs. any attributes
+df["is_universal"] = ~df[label_cols].any(axis=1)
+df_universal = df[["text", "is_universal"]].copy()
+del df["is_universal"]
+
+fw_universal = compute_fighting_words(
+    l1=df_universal.loc[ df_universal["is_universal"], 'text'].tolist(),  # universal mentions
+    l2=df_universal.loc[~df_universal["is_universal"], 'text'].tolist(),  # mentions with any attributes
+    cv=vectorizer,
+)
+
+fw_universal = pd.DataFrame(fw_universal, columns=['word', 'score']).sort_values('score', ascending=False)
+```
+
+```{python}
+#| label: fig-fw_universal_mentions
+#| output: true
+#| fig-cap: 'Most distinctive words for mentions with no specific attributes (_universal_ mentions, left) vs. mentions with at least one economic or non-economic attribute (right). Values plotted are $z$-scores from "fighting words" analysis. Values above ±1.96 (vertical dashed line) can be considered significantly distinctive.'
+
+# Get top 20 lowest (most negative) and highest (most positive) scores
+top_negative = fw_universal.nsmallest(20, 'score').sort_values('score', ascending=False)
+top_positive = fw_universal.nlargest(20, 'score').sort_values('score', ascending=True)
+
+# Create two-column layout
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4), sharey=False)
+
+# Left plot: positive scores (distinctive for universal mentions)
+ttl = r"universal mentions (no specific attributes)"
+ax1.axvline(x=1.96, color='black', linestyle='--', linewidth=0.8, zorder=1)
+ax1.barh(range(len(top_positive)), top_positive['score'], color='#1b9e77', zorder=2)
+ax1.set_yticks(range(len(top_positive)))
+ax1.set_yticklabels(top_positive['word'])
+ax1.set_xlabel('z-score', fontsize=11)
+ax1.set_title(ttl, fontweight='bold', fontsize=12)
+ax1.axvline(x=0, color='black', linestyle='-', linewidth=0.8)
+ax1.yaxis.tick_right()
+ax1.yaxis.set_label_position('right')
+plt.setp(ax1.get_yticklabels(), ha='left')
+ax1.set_xlim(0, 120)
+ax1.invert_xaxis()  # Invert to show positive values extending left
+
+# Right plot: negative scores (distinctive for mentions with attributes)
+ttl = r"mentions with specific attributes"
+ax2.axvline(x=-1.96, color='black', linestyle='--', linewidth=0.8, zorder=1)
+ax2.barh(range(len(top_negative)), top_negative['score'], color='#d95f02', zorder=2)
+ax2.set_yticks(range(len(top_negative)))
+ax2.set_yticklabels(top_negative['word'])
+ax2.set_xlabel('z-score', fontsize=11)
+ax2.set_title(ttl, fontweight='bold', fontsize=12)
+ax2.set_xlim(-120, 0)
+ax2.invert_xaxis()  # Invert to show negative values extending left
+
+plt.tight_layout()
+plt.show()
+```
+
+We consider predicted group mentions that are predicted to contain no attributes as "universal" group references, that is, references to groups in general without specifying which kind of people they mean exactly.
+To validate, that the predicted absence of attributes in these mentions indeed reflects this conceptual category, we examine the most distinctive $n$-grams of these mentions by applying the "fighting words" method [@monroe_fightin_2008] to all group mentions in our corpus, using a binary indicator of whether a mention is predicted to be a "universal" group reference as grouping variable.
+
+@fig-fw_universal_mentions shows the top 20 most distinctive $n$-grams of "universal" group references and compares them 
+The set of most distinctively "universal" terms includes tokens like "people", "society", "everyone", and similar terms that are used as generic collectivisms in the English language.
+The most distinctively non-"universal" terms, in turn, include denotational group labels like "women", "students", "citizens", and "family".
+
+```{python}
+#| label: tbl-fw_universal_mentions_examples
+#| output: false
+#| tbl-cap: 'Examples of _universal_ group references. Values computed by summing "fighting words" scores as weights of mentions'' tokens, normalized by number of tokens.'
+fw_lookup = {r['word']: r['score'] for r in fw_universal.to_dict(orient='records')}
+fw_vals = np.array([fw_lookup[f] for f in vectorizer.get_feature_names_out()])
+analyzer = vectorizer.build_analyzer()
+
+# vectorize mentions 
+universal_mentions = df_universal[df_universal['is_universal']].reset_index(drop=True)
+mentions_texts = universal_mentions['text']
+
+X_mentions = vectorizer.transform(mentions_texts.tolist())
+# binarize
+X_mentions[X_mentions>0] = 1
+# apply z-score values to each row in `X_mentions` as weights
+X_mentions_scores = X_mentions @ fw_vals[:, np.newaxis]
+# normalize for mention length
+X_mentions_scores /= X_mentions.sum(axis=1)
+
+universal_mentions['score'] = X_mentions_scores[:, 0]
+# rank = universal_mentions['score'].argsort()[::-1]
+
+tab = universal_mentions[universal_mentions['score']>1.96]
+tab['text_norm'] = tab['text'].apply(lambda x: ' '.join(analyzer(x)).strip())
+tab = tab.drop_duplicates('text_norm').sort_values('score', ascending=False).head(400)
+
+n_ = 20
+tab = tab.sample(n_, weights=tab['score'].abs()**2, random_state=42)
+
+tab = tab[['text', 'score']].sort_values('score', ascending=False).reset_index(drop=True)
+tab.columns = ["Mention", "$z$-score"]
+
+# TODO: make latex table
+latex_table(tab)
+```
+
+## Attribute category co-occurrence analyses
+
+```{python}
+#| eval: true
+#| label: tbl-n_attributes_distribution
+#| output: true
+#| tbl-cap: 'Distribution of social group mentions by number of attributes. Rows indicate the number of attributes predicted for each mention. Columns report absolute counts ($N$) and proportions (share) for overall attributes (combining economic and non-economic), economic attributes only, and non-economic attributes only.'
+
+n_attrs_stats = df[econ_attrs + nonecon_attrs].sum(axis=1).value_counts().sort_index().to_frame(name='count')
+n_attrs_stats['prop'] = (n_attrs_stats['count'] / n_attrs_stats['count'].sum()).round(3)
+
+n_econ_attrs_stats = df[econ_attrs].sum(axis=1).value_counts().sort_index().to_frame(name='count')
+n_econ_attrs_stats['prop'] = (n_econ_attrs_stats['count'] / n_econ_attrs_stats['count'].sum()).round(3)
+
+n_nonecon_attrs_stats = df[nonecon_attrs].sum(axis=1).value_counts().sort_index().to_frame(name='count')
+n_nonecon_attrs_stats['prop'] = (n_nonecon_attrs_stats['count'] / n_nonecon_attrs_stats['count'].sum()).round(3)
+
+# TODO: inspect extreme examples with ≥4 attributes
+combined_stats = pd.concat([n_attrs_stats, n_econ_attrs_stats, n_nonecon_attrs_stats], axis=1)
+combined_stats.fillna(0, inplace=True)
+combined_stats["count"] = combined_stats["count"].astype(int)
+combined_stats.columns = pd.MultiIndex.from_tuples(
+    [
+        [l1, l2]
+        for l1 in ["overall", "economic", "non-economic"]
+        for l2 in ["$N$", "share"]
+    ],
+)
+combined_stats.index.name = "$N$ attributes"
+
+latex_table(combined_stats, index=True)
+```
+
+We argue that intersectionality in parties' group mentions is an interesting facet of their group focus strategies.
+In this context, the question arises how to compare interesectionality patterns between groups.
+In our analysis, a key question along this line is whether PRR vs. Green parties combine attributes differently?
+
+There are multiple ways to quantify and compare attribute co-occurrence patterns.
+Each approach has its strengths and weaknesses.
+Below, we discuss four possible approaches and provide recommendations for their use.
+
+- **Comparing conditional probabilities**:
+    We can compute $\Pr(\text{attribute B} \mid \text{attribute A})$ by party family and compare the values.
+    Conditional probabilities have the advantage that they are very interpretable, allowing statements like "When PRRP mentions class, 12% also mention gender."
+    They thus directly answers substantive questions about co-occurrence patterns.
+    Further, they do not suffer from base rate sensitivity issues like the PMI (see below).
+    Subtracting the values for Green parties from thjose for PRR parties, for example, we obtain an indicator that is negative if PRR parties tend to combine the given attributs more frequently.
+    Conditional probability differences can thus be compared across parties through simple subtraction, and the approach works well even with sparse data.
+    
+    The downside is that the measure is asymmetric, requiring careful interpretation. 
+    Further, it does not account for statistical significance of observed differences.
+    
+    We therefore use it solely for _descriptive_ comparison of party families' attribute combination strategies.
+
+- **Comparing statistical significance**:
+    We can apply $\chi^2$ or Fisher's exact tests for each attribute pair to determine whether co-occurrence patterns differ significantly between party families.
+    These tests provide formal hypothesis testing and control for sampling variability. 
+    Effect size measures, such as Cramér's $V$, in turn, allow assessing practical significance beyond mere statistical significance.
+    <!-- , and Fisher's exact test works reliably even with small cell counts. -->
+    
+    However, multiple comparison problems arise when testing many pairs simultaneously, requiring correction procedures like Bonferroni adjustment. 
+    The tests are also sensitive to sample size, meaning that with large N, nearly everything becomes statistically significant. 
+    Further, binary yes/no decisions do not capture the magnitude of differences.
+    
+    We therefore use significance testing for determining which attribute pair differences are statistically robust.
+
+- **Comparing normalized Pointwise Mutual Information (nPMI)**:
+    We can compute nPMI values by party family, which compare observed to expected co-occurrence under statistical independence.
+    nPMI identifies unexpected patterns in both directions (positive associations where attributes co-occur more than expected, and negative associations where they co-occur less than expected). 
+    Being normalized to a [-1, +1] scale, it allows comparing different attribute pairs.
+    This makes the nPMI metric useful for exploratory analysis.
+    
+    However, the measure is hard to interpret substantively in terms of party strategy. 
+    It is sensitive to base rates, and negative values tend to dominate in sparse data (as we observed in our analysis). 
+    Additionally, differences between parties can be small even when the underlying patterns differ substantially.
+    
+    We therefore use nPMI primarily for identifying which attribute pairs warrant further investigation.
+
+```{python}
+#| label: fig-attribute_interesectionality
+#| output: true
+#| fig-cap: 'Co-occurrence patterns of attribute categories in intersectional social group mentions, that is, mentions that combine at least two attributes. Heatmap cells show the share of mentions where each focal attribute (rows) co-occurs with other attributes (columns). Top panel: economic attributes; bottom panel: non-economic attributes. *Note:* Values below 0.01 are not displayed.'
+
+#TODO: consider moving this in the 
+# Filter to mentions with ≥1 economic attribute
+attr_presence = df[[c for c in econ_attrs + nonecon_attrs if c in df.columns]].apply(lambda col: binarize_column(col))
+has_multi_attrs = attr_presence.sum(axis=1) >= 2
+df_with_attrs = df[has_multi_attrs].copy()
+
+# Compute co-occurrence breakdown
+cooc_breakdown = compute_cooccurrence_breakdown(df_with_attrs, econ_attrs + nonecon_attrs)
+cooc_breakdown = cooc_breakdown.query("cooccur_with!='alone'")
+
+# Create pivot table for heatmap: focal_attr × cooccur_with
+heatmap_data = cooc_breakdown.pivot_table(
+    index='focal_attr',
+    columns='cooccur_with',
+    values='prevalence',
+    aggfunc='first'
+).fillna(0)
+
+heatmap_data.rename(index=attribute_category_names_map, columns=attribute_category_names_map, inplace=True)
+
+fig, axes = plot_heatmap(
+    x=heatmap_data,
+    panel_groups=(econ_attr_names, nonecon_attr_names),
+    mask_diagonal=True,
+    cmin=0.01,
+    cmap='RdPu', #cmap='YlOrRd',
+    clims=(0, 1.0),
+    clegend_title='Prevalence of co-occurrence',
+)
+axes[0].set_ylabel("economic\n", fontweight='bold')
+axes[1].set_ylabel("non-economic\n", fontweight='bold')
+plt.show()
+```
+
+@fig-attribute_interesectionality allows examining specific intersectionality patterns by focusing on the 21.6% of non-universal mentions that feature at least two attributes and are thus intersectional.
+The heatmap reveals several notable patterns in how parties combine different attribute categories when making intersectional group references.
+
+Among economic attributes, _employment status_ emerges as the most "connective" attribute, frequently co-occurring with other economic categories such as _income/wealth/economic status_ and _occupation/profession_, as well as with non-economic attributes like _age_ and _health_.
+In contrast, _education level_ shows more selective co-occurrence patterns, primarily combining with _age_ and _nationality_.
+
+The non-economic attribute patterns show even stronger associations.
+_Age_ and _family_ exhibit particularly high co-occurrence rates, potentially reflecting parties' tendency to frame generational concerns within family contexts (e.g., "young families").
+Similarly, _ethnicity_, _nationality_, and _religion_ form a tight cluster of frequently combined attributes, suggesting parties often invoke multiple aspects of cultural identity simultaneously.
+_Place/location_ also frequently appears with _nationality_, indicating geographic and national identity are often linked in party discourse.
+
+Cross-dimensional intersectionality patterns reveal strategic combinations that bridge economic and non-economic concerns.
+_Health_ serves as a bridge attribute, frequently combined with _income/wealth/economic status_, possibly reflecting parties' attention to health inequalities.
+_Shared values/mentalities_ often co-occurs with _occupation/profession_, suggesting parties frame certain occupational groups through ideological lenses.
+
+Notably, some attributes rarely appear together even in intersectional mentions.
+_Gender/sexuality_ shows relatively low co-occurrence with most economic attributes, potentially indicating that parties treat gender concerns as distinct from economic policy domains.
+These patterns suggest that while parties do engage in intersectional group appeals, they follow certain discursive templates that systematically combine some attributes while keeping others separate.
+
+
+```{python}
+attr_presence = df[[c for c in econ_attrs + nonecon_attrs if c in df.columns]].apply(lambda col: binarize_column(col))
+
+has_any_attrs = attr_presence.sum(axis=1) >= 1
+df_with_attrs = df[has_any_attrs].copy()
+
+# Compute associations for all attributes (within and across dimensions)
+assoc_all = compute_attribute_associations(df_with_attrs, econ_attrs + nonecon_attrs)
+
+# Extract key measures
+cpr_all = assoc_all["p_b_given_a"]
+pmi_all = assoc_all["pmi"]  # PMI
+ppmi_all = assoc_all["ppmi"]  # Positive PMI (co-occurrence above chance)
+npmi_all = assoc_all["npmi"]  # Normalized PMI (range [-1, 1])
+```
+
+### Conditional probabilities of co-occurrence
+
+An alternative approach to quantatively describing attribute co-occurrence patterns is to compute the conditional probabilities of co-occurrence.
+We can compute $\Pr(\text{attribute B} \mid \text{attribute A})$ for attribut category pairs and compare these values.
+Conditional probabilities have the advantage that they are very interpretable, allowing statements like "When a party uses economic status to describe a group, the propbability that it also uses gemnder/sexuality in the groip mention is 0.12."
+Conditional probabilities thus directly answers substantive questions about co-occurrence patterns.
+Further, they do not suffer from base rate sensitivity issues.
+    
+The downside is that the measure is asymmetric, requiring careful interpretation. 
+Further, it does not account for statistical significance of observed differences.
+We therefore use it solely for _descriptive_ comparison of party families' attribute combination strategies.
+
+```{python}
+#| label: fig-attribute_cpr_overall
+#| output: true
+#| fig-cap: 'Conditional probabilities of attribute co-occurrence in social group mentions. Heatmap cells show P(B|A), the probability of mentioning attribute B given that attribute A is mentioned. Rows indicate "attribute A" (the conditioning attribute) and columns indicate "attribute B" (the outcome attribute). *Note:* Values below 0.01 are not displayed.'
+
+cpr_all_renamed = cpr_all.rename(index=attribute_category_names_map, columns=attribute_category_names_map)
+
+fig, axes = plot_heatmap(
+    x=cpr_all_renamed,  # Your data with readable labels
+    panel_groups=(econ_attr_names, nonecon_attr_names),
+    cluster_rows=False,
+    cluster_cols=False,
+    cmin=0.01,
+    cmap='RdPu', #cmap='YlOrRd',
+    clims=(0, 1),
+    clegend_title='conditional probability'
+)
+axes[0].set_ylabel("economic\n", fontweight='bold')
+axes[1].set_ylabel("non-economic\n", fontweight='bold')
+plt.show()
+```
+
+```{python}
+# pivot longer:
+cpr_values = cpr_all.copy()
+# set upper triangle and diagonal to NaN to avoid duplicates
+cpr_values.values[np.triu_indices_from(cpr_values.values)] = np.nan
+cpr_values = cpr_values.reset_index().melt(id_vars='attr_a', var_name='attr_b', value_name='value')
+cpr_values.dropna(subset=['value'], inplace=True)
+cpr_values.sort_values('value', ascending=False, inplace=True)
+
+# Create DataFrame with top 10 nPMI combinations and example mentions
+top_cpr_examples = []
+
+for a, b, v in cpr_values.query("value > 0.1").head(10).itertuples(index=False):
+
+    # Find mentions where both attributes are present
+    idxs = df[[a, b]].apply(lambda col: binarize_column(col), axis=0).sum(axis=1) == 2
+    exclude = df.loc[idxs, label_cols].sum(axis=1) != 2
+    idxs = idxs & ~exclude
+    n_examples = min(5, idxs.sum())
+    
+    # Sample random examples
+    examples = df.loc[idxs].sample(n=n_examples, random_state=42)['text'].tolist()
+    
+    # Create row
+    example_row = {
+        'attr_a': attribute_category_names_map.get(a, a),
+        'attr_b': attribute_category_names_map.get(b, b),
+        'cpr': v,
+        'ex1': examples[0],
+        'ex2': examples[1],
+        'ex3': examples[2],
+        'ex4': examples[3],
+        'ex5': examples[4]
+    }
+    
+    top_cpr_examples.append(example_row)
+
+# Create DataFrame
+df_top_cpr_examples = pd.DataFrame(top_cpr_examples)
+df_top_cpr_examples.columns=['attribute a', 'attribute b', 'Pr(b | a)'] + [f'example {i}' for i in range(1, 6)]
+```
+
+```{python}
+#| label: tbl-top_cpr_examples
+#| output: true
+#| tbl-cap: 'Top attribute combinations by conditional probability $Pr(b | a)$, that is, the probability of attribute $b$ being present in a mention given that attribute $a$ is present. Only combinations with $Pr(b | a) > 0.1$ are included. Example mentions are randomly sampled from mentions that feature both attributes and no other attributes (i.e., mentions that only feature these two attributes).'
+
+latex_table(df_top_cpr_examples)
+```
+
+<!--
+**Strong positive associations (green cells, nPMI > 0.4)** indicate that when parties mention groups with one attribute, they systematically combine it with another:
+The strongest association is between *place/location* and *religion* (nPMI = 0.65), suggesting parties often characterize religious groups by geographic identity (e.g., "Muslims in our cities").
+*Ethnicity* and *religion* also strongly co-occur (nPMI = 0.54), reflecting how parties conflate ethnic and religious identities in their group appeals.
+Among economic attributes, *income/wealth/economic status* and *employment status* co-occur (nPMI = 0.44), indicating parties link material conditions to labor market position.
+*Ecology of group* and *shared values/mentalities* associate positively (nPMI = 0.41), suggesting parties frame group characteristics through both environmental and ideological lenses.
+*Age* and *family* co-occur (nPMI = 0.36), as parties often connect generational identities to family structures.
+
+**Strong negative associations (magenta cells, nPMI < -0.6)** reveal systematic mutual exclusion, where attributes rarely appear together:
+*Ecology of group* shows strong negative associations with multiple attributes including *family* (-0.75), *education level* (-0.70), *class membership* (-0.66), and *ethnicity* (-0.66), suggesting ecological characterizations constitute a distinct mode of group appeals that excludes other dimensions.
+*Gender/sexuality* and *class membership* are mutually exclusive (-0.74), indicating parties rarely combine gender/sexual identity with class-based characterizations.
+Economic status dimensions avoid religious characterizations: *income/wealth/economic status* ↔ *religion* (-0.71) and *employment status* ↔ *place/location* (-0.72).
+*Ethnicity* and *class membership* rarely co-occur (-0.68), suggesting parties treat ethnic and class identities as alternative frames rather than intersecting dimensions.
+
+**Implications for party communication strategies:**
+These patterns reveal that parties employ distinct "templates" for group characterization: religious-geographic appeals, economic-material appeals, and ecological-values appeals operate largely independently.
+The mutual exclusion of gender/sexuality from economic attributes suggests parties compartmentalize identity politics and economic grievances rather than acknowledging their intersection.
+The strong positive associations indicate established discursive shortcuts: when parties invoke certain attributes, they predictably combine them with specific others, reflecting broader cultural associations (e.g., ethnicity-religion) or analytical frameworks (e.g., income-employment).
+The systematic avoidance of certain combinations (e.g., ecology with class, gender with economic status) points to blind spots in how parties conceptualize group diversity, potentially missing important intersectional identities like working-class women or economically marginalized ethnic minorities.
+-->
+

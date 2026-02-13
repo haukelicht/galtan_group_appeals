@@ -1,0 +1,35 @@
+% Source - https://stackoverflow.com/a/75043433
+% Posted by Shafee, modified by community. See post 'Timeline' for change history
+% Retrieved 2025-12-11, License - CC BY-SA 4.0
+
+$if(title)$
+\title{%
+    $title$$if(thanks)$\thanks{$thanks$}$endif$
+    $if(subtitle)$\\\Large $subtitle$$endif$%
+}
+$endif$
+
+
+$for(by-author)$
+  \author{$by-author.name.literal$$if(by-author.email)$\thanks{\href{mailto:$by-author.email$}{$by-author.email$}}$endif$}
+  $if(by-author.affiliations)$
+    $for(by-author.affiliations)$
+      \affil{%
+        $if(by-author.affiliations.name)$
+          $by-author.affiliations.name$
+        $endif$
+        $if(by-author.affiliations.organization)$
+          , $by-author.affiliations.organization$
+        $endif$
+        $if(by-author.affiliations.city)$
+          , $by-author.affiliations.city$
+        $endif$
+        $if(by-author.affiliations.country)$
+          , $by-author.affiliations.country$
+        $endif$
+      }
+    $endfor$
+  $endif$
+$endfor$
+
+\date{$date$}

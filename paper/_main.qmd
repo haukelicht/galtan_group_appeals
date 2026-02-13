@@ -1,0 +1,199 @@
+---
+title: "Focusing on social attributes, not group categories"
+subtitle: "Quantifying social group mentions"
+# author: _anonymized_
+author:
+  - name: "Hauke Licht"
+    affiliations: 
+      - "University of Innsbruck, Department of Political Science & Digital Science Center"
+    corresponding: true
+    email: "Corresponding author: hauke.licht@uibk.ac.at"
+  - name: Leonce Röth
+    affiliations:
+      - "LMU Munich, Geschwister-Scholl-Institute of Political Science"
+date: "January 16, 2026"
+abstract: \noindent \input{abstract.tex}
+wordcount: 19371
+keywords:
+  - social groups
+  - social attributes
+  - intersectionality
+  - text analysis
+  - computational social science
+  - political behavior
+engine: jupyter
+jupyter: galtan_group_appeals
+execute:
+  enabled: true 
+  eval: true
+  echo: false
+  output: false
+  warning: false
+project:
+  execute-dir: project
+format:
+  pdf:
+    documentclass: article
+    keep-tex: true
+    fontsize: 12pt
+    linestretch: 1.5
+    toc: false
+    number-sections: true
+    number-depth: 2
+    margin-top: 1in
+    margin-left: 1in
+    margin-right: 1in
+    margin-bottom: 1in
+    colorlinks: true
+    linkcolor: black
+    citecolor: black
+    urlcolor: black
+    fig-align: "center"
+    fig-pos: "!th"
+    fig-format: pdf
+    tab-pos: "!th"
+    template-partials: 
+      - partials/title.tex
+    header-includes:
+      - \input{_preamble.tex}
+      - \usepackage{authblk}
+      - \usepackage{titling}
+      - \usepackage{booktabs}
+      - \usepackage{adjustbox}
+      - \usepackage[labelfont=bf]{caption}
+      - \usepackage{multirow}
+      - \usepackage{pdflscape}
+      - \usepackage{afterpage}
+      - \usepackage{unicode-math}
+      - \usepackage{newunicodechar}
+      - \newunicodechar{α}{$\alpha$}
+      - \usepackage{titletoc}
+      - \usepackage{float}
+bibliography: references.bib
+csl: chicago.csl
+---
+
+```{python}
+# %config InlineBackend.figure_formats = ['svg']
+
+#| label: setup
+
+import os
+import sys
+from pathlib import Path
+import gc
+
+# Get the project root (two levels up from this file's location)
+base_path = Path.cwd().resolve().parent
+sys.path.insert(0, str(base_path / 'code'))
+sys.path.insert(0, str(base_path / 'paper'))
+
+import pandas as pd
+import numpy as np
+
+import re
+from utils.fighting_words import bayes_compare_language as compute_fighting_words
+from sklearn.feature_extraction.text import CountVectorizer
+from nltk.corpus import stopwords
+
+from statsmodels.stats.proportion import proportion_confint
+from scipy.stats import chi2_contingency, fisher_exact
+from itertools import combinations, permutations
+
+# import plotting and table utils
+from reporting import *
+
+# suppress warnings for cleaner output
+import warnings
+warnings.filterwarnings('ignore')
+
+# Define base directory (paper/secs -> go up two levels to project root)
+data_path = base_path / 'data'
+labeled_path = data_path / 'labeled'
+intermediate_path = data_path / 'intermediate'
+manifestos_path = data_path / 'manifestos'
+annotations_path = data_path / 'annotations'
+results_path = base_path / 'results'
+```
+
+```{=tex}
+\begin{center}
+Word count: {{< meta wordcount >}}
+\end{center}
+% % TODO: add for journal submission
+% \vfill
+% \begin{singlespace}
+% \input{ai_disclosure.tex}
+% \end{singlespace}
+\thispagestyle{empty}
+\clearpage
+\setcounter{page}{1}
+\setlength{\parskip}{0pt}
+\setlength{\parindent}{20pt}
+```
+
+{{< include secs/01-introduction.md >}}
+
+{{< include secs/02-taxonomy.md >}}
+
+{{< include secs/03-application.qmd >}}
+
+# Results
+
+{{< include secs/04.1-results.qmd >}}
+
+{{< include secs/04.2-convergence.qmd >}}
+
+{{< include secs/04.3-party_family_analysis.qmd >}}
+
+
+\bigskip
+
+# References
+
+```{=tex}
+\begingroup
+%\setlength{\bibsep}{2pt}
+\setstretch{1.15}
+```
+
+::: {#refs}
+:::
+
+```{=tex}
+\endgroup
+```
+
+
+```{=tex}
+\clearpage
+\appendix
+\setcounter{page}{1}
+\begin{center}
+\Huge \scshape Supplemental Materials \par
+\LARGE \bfseries {{< meta title >}} \par
+\end{center}
+\vfill
+\renewcommand{\contentsname}{Contents}
+\startcontents[appendix]
+\printcontents[appendix]{}{1}{\setcounter{tocdepth}{2}}
+\vfill
+\clearpage
+
+\counterwithin{figure}{section}
+\counterwithin{table}{section}
+\renewcommand\thefigure{\thesection\arabic{figure}}
+\renewcommand\thetable{\thesection\arabic{table}}
+```
+
+{{< include apxs/03-application.qmd >}}
+
+# Additional analyses and results
+
+{{< include apxs/04.1-results.qmd >}}
+
+\clearpage
+{{< include apxs/04.2-convergence.qmd >}}
+
+\clearpage
+{{< include apxs/04.3-party_family_analysis.qmd >}}

@@ -1,0 +1,4 @@
+!*.ipynb
+*.qmd
+backup/
+*OLD.*

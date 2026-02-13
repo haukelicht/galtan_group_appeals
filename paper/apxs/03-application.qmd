@@ -1,0 +1,221 @@
+
+# Dataset
+
+```{python}
+#| label: fig-cases_overview
+#| cache: true
+#| output: true
+#| fig-cap: 'Overview of cases included in out corpus. Each square represents a party in a given year, colored by its party family.'
+
+tmp = df[['country_iso3c', 'year', 'party_name', 'party_family']].drop_duplicates()
+tmp.party_family = tmp.party_family.map(family_map)
+
+countries = tmp['country_iso3c'].unique().tolist()
+
+heights = tmp.groupby('country_iso3c').aggregate({'party_name': 'nunique'})['party_name']
+
+n_col = 1
+fig, axes = plt.subplots(
+    len(countries)//n_col, n_col, 
+    figsize=(5, heights.sum()/4), 
+    height_ratios=heights.to_list(),
+    sharex=True, 
+    gridspec_kw={'hspace': 0.4}
+    )
+
+axes = axes.flatten()
+
+scatter_kwargs = dict(
+    x='year', 
+    y='party_name', 
+    hue='party_family', 
+    marker='s', 
+    palette=all_fam_palette,
+    s=100, 
+    legend=False
+)
+for i, (ctr, subdf) in enumerate(tmp.groupby("country_iso3c")):
+    ax = axes[i]
+    sns.scatterplot(data=subdf, ax=ax, **scatter_kwargs)
+    # ax.set_ylim(1.15, -0.15)
+    ax.set_ylabel(None)
+    # add country label as y-axis label (second axis) on right hand side
+    ax.xaxis.grid(False)
+    for spine in ax.spines.values():
+        spine.set_edgecolor(None)
+        spine.set_visible(False)
+    ax_right = ax.twinx()
+    ax_right.set_ylabel(ctr, fontweight='bold', rotation=0, labelpad=15)
+    ax_right.set_yticks([])
+    # ax_right.spines['right'].set_visible(False)
+    # increase y-limits so that squares are fully visible
+    ax.set_ylim(-0.5, len(subdf['party_name'].unique()) - 0.5)
+    # make plot backgorund light gray
+    ax.set_facecolor('#f0f0f0')
+```
+
+```{python}
+len(econ_attrs), len(nonecon_attrs)
+```
+
+\clearpage
+
+# Attribute classification
+
+## Coding instrument {#sec-coding_instrument}
+
+Our coding instructions introduce the vertical/horizontal distinction, each of the attribute categories, as well as our "universal" group mention category, explain the available coding choices, and give examples.
+Our coding instrument, implemented as a Qualtrix survey, presents annotators independently with one social group mention at a time (i.e., per page) in their respective sentence context, marking the mention in bold.
+
+Below the display of the sentence, the annotator is first asked to indicate whether the highlighted mention is an "universal" mention per our definition.
+If the annotator chose "Yes" for this coding dimension, our coding instructions asked them to proceed with the next instance on the next page.
+
+If not, the annotator proceeds with coding the attribute categories for the vertical and horizontal attribute dimensions in turn.
+For each of the dimensions, we tasked the annotator to indicate which of the respective attribute categories was contained in the highlighted social group mention, displaying the attribute categories below each other[^1] in a multiple-choice grid with the answer options "Yes" or "Unsure" horizontally aligned.[^2]
+This procedure results in 17 annotations[^3] per mention-in-sentence-context instance and annotator.
+<!-- TODO: consider how to handle later omission of _class membership_ and _ecology of group_ categories !? -->
+
+[^1]: We kept the categories' order fixed across examples to ease the cognitive load at annotation time.
+[^2]: We omitted options for "No" because not choosing "Yes" or "Unsure" for a given attribute category implied this coding choice.
+[^3]: 1$\times$ universal + 5$\times$ vertical attributes + 11$\times$ horizontal attributes
+
+## Annotation
+
+In a first round of annotations, we have sampled 300 mentions-in-sentence-context examples from all sentences with at least one predicted social group mention, again using an informativeness-based sampling strategy.
+@tbl-ica_overall reports the micro inter-annotator agreement (ICA) by attribute dimension from this round and indicated that our coders produced overall reliable annotations.
+To resolve examples with disagreeing annotations, the authors team reviewed any mention-in-sentence-context example with at least one disagreeing annotation to determine their final labels.<!--[^5]-->
+
+
+<!-- [^5]: This lead to a few revisions of attribute classifications the annotators agreed on in annotations where RAs unanimous coding disagreed with experts' judgments.
+    We resolved them manually and updated the final annotations accordingly. -->
+
+<!-- TODO: mention when we introduced the shared values/mentalities class -->
+
+However, as expected, the prevalence of attribute categories in the labels collected in this first round turned out to be very imbalanced and we observed variation in ICA estimates across categories that could only partially be explained by low prevalence (see @tbl-ica_cats).
+We therefore dedicated a second annotation round to collecting more annotations for difficult examples.
+To this end, we fine-tuned a multilabel classifier to predict mentions-in-sentence-context examples' binary labels on the universal, vertical, horizontal indicators based on the consolidated annotations collected in the first round.<!--[^6]-->
+We applied this classifier to the mention-in-sentence-context instances not yet distributed for attribute annotation to obtain predicted probabilities.
+We then computed classification uncertainty at the example level<!--[^7]--> and selected the 150 most uncertain examples into a second annotation batch.
+
+<!-- [^6]: See section XX for the details of our few-shot fine-tuning strategy.
+    The resulting model showed already strong classification performance for this high-level task considering how few examples we distributed for annotation in the first round.
+-->
+
+<!-- [^7]: Computing classification uncertainty as minimal closeness to one of the three 0.5 classification thresholds. -->
+
+@tbl-ica_overall and @tbl-ica_cats show that, due to our focus on difficult examples, ICA was generally lower than in the first round.
+We therefore used zero-shot in-context learning [@brown_language_2020] to generate large language model (LLM) annotations for the examples in the second-round batch.<!--[^8]-->
+We then presented our annotators the instances where the LLM disagreed with their judgment and tasked them to (independently) judge which annotation they viewed as more valid while blinding them towards the source of the respective annotations.
+The author team arbitrated the cases in which our annotators' independent judgments disagreed.
+All instances from this second round were then consolidated into final labels and added to those of the first round.
+
+```{python}
+## report reliability by round
+
+annoation_rounds = {
+    '1': 'social-group-mention-categorization-coder-training',
+    '2': 'social-group-mention-categorization-round02',
+    '3': 'social-group-mention-categorization-round03',
+}
+
+folder = annotations_path / 'group_mention_categorization'
+ica_raw = pd.concat({
+    r: pd.read_pickle(folder / f / 'parsed' / 'ica_estimates.pkl') 
+    for r, f in annoation_rounds.items()
+})
+ica_raw.reset_index(level=0, names=['round'], inplace=True)
+ica_raw.loc[ica_raw.label.isna(), 'label'] = ica_raw.loc[ica_raw.label.isna(), 'q_category']
+ica_raw.loc[ica_raw.q_id=='universal_attributes', 'label'] = 'overall'
+```
+
+```{python}
+ica = ica_raw.loc[ica_raw.q_id.str.endswith('_attributes'), ['round', 'q_id', 'label', 'prop_yes', 'krippendorff_alpha']]
+ica = ica[~ica.label.isna()]
+
+cats_map = {i.split('__')[1]: nm for i, nm in attribute_category_names_map.items()}
+ica['label'] = ica.label.replace({"education level": "education"})
+ica['category'] = ica.label.replace(cats_map)
+```
+
+```{python}
+#| label: tbl-ica_overall
+#| output: true
+#| tbl-cap: 'Inter-coder agreement estimates for attribute classifications computed at the level of attribute dimensions: universal, economic, and non-economic. Estimates are based on Krippendorff''s σ and the prevalence of ''yes'' annotations (prevalence) across all annotated examples in each annotation round.'
+ica_overall = ica.loc[ica.label == 'overall', ['round', 'q_id', 'prop_yes', 'krippendorff_alpha']]
+ica_overall = ica_overall.rename(columns={'prop_yes': 'prevalence', 'krippendorff_alpha': r"Krippendorff's $\alpha$"})
+ica_overall['q_id'] = ica_overall.q_id.str.removesuffix('_attributes')
+ica_overall['q_id'] = pd.Categorical(ica_overall['q_id'], categories=['universal', 'economic', 'non-economic'], ordered=True)
+ica_overall = ica_overall.pivot_table(index='q_id', columns=['round'], observed=True).round(3)
+ica_overall.index.name = None
+ica_overall.columns.names = [None, 'annotation round']
+latex_table(ica_overall, index=True)
+```
+
+```{python}
+#| label: tbl-ica_cats
+#| output: true
+#| tbl-cap: Inter-coder agreement estimates for attribute classifications computed at the level of economic and non-economic attribute categories. Estimates are based on Krippendorff's α and values in parentheses indicate the prevalence of 'yes' annotations (prevalence) across all annotated examples in each annotation round.
+ica_cats = ica.loc[ica.label != 'overall', ['round', 'q_id', 'category', 'prop_yes', 'krippendorff_alpha']]
+ica_cats['category'] = pd.Categorical(ica_cats['category'], categories=list(cats_map.values()), ordered=True)
+ica_cats['value'] = ica_cats.apply(lambda r: rf"{r['krippendorff_alpha']:+0.3f} ({r['prop_yes']*100:0.1f}\%)", axis=1)
+ica_cats['q_id'] = ica_cats.q_id.str.removesuffix('_attributes')
+ica_cats = ica_cats.pivot_table(index=['q_id', 'category'], columns=['round'], values=['value'], aggfunc='first', observed=False).round(3).fillna('').sort_index()
+ica_cats.columns = pd.Index(ica_cats.columns.get_level_values(1), name='annotation round')
+ica_cats.index.names = ['dimension', 'category']
+latex_table(ica_cats, index=True, resize=True)
+```
+
+<!-- [^8]: See SM XX for the prompts, model, and hyper-parameters we used. -->
+In a third round of annotation, we then addressed the problem of label class imbalance that clearly showed in the pooled set of multi-labeled mention-in-sentence-context instances from rounds one and two.
+In particular, we focused on over-sampling likely examples of so far under-represented attribute categories in the vertical and horizontal attribute dimensions.
+To identify likely examples for the given label categories, we used the attribute category definitions to define queries and used a pre-trained sentence embedding model to rank so far unannotated mention-in-sentence-context instances based on their cosine similarities to each of these queries.
+To oversample likely examples of so far underrepresented categories, we defined quotas for each attribute category in inverse proportion to the categories prevalence in the labeled instances from round one and two, using a annotation budget of 200 examples for round 3.
+We then chose as many of the so far unanottated mention-in-sentence-context instances as the quote prescribed in descending order of their embeddings' similarities to the embedding of the respective attribute category definition query.
+In total, this resulted in a samole of 180 mention-in-sentence-context examples for annotation in round 3.[^10]
+
+[^10]: Deviations from the annotation budget of 200 cases are explained by rounding in the computation of quotas and some mention-in-sentence-context instances that were ranked high for multiple attribute queries.
+
+@tbl-ica_overall shows that the attribute annotations of examples in this third round were overall highly reliable, which is likely explained by focusing on identifying *likely* examples of each attribute category in this final round (in contrast to difficult instances in round 2).
+Further, the consolidated labels from round 3 showed that our over-sampling strategy was effective as it helped to reduce the label class imbalance across the set of vertical and horizontal attribute categories.
+
+A last round of annotation focused on conceptual consolidation and was performed by the authors.
+Specifically, we manually reviewed any annotated examples that were labeled as combining certain attribute categories to determine whether the combination of these categories was conceptually valid and consistent with our attribute definitions.
+
+<!-- 
+TODOs
+
+
+- describe concrete review startegies 
+    1. concept-driven review
+    2. word-wise review
+
+- mention classifier ensemble-based review !!!
+
+note: see round5/ in code/group_mention_categorization/ 
+
+-->
+
+## SetFit finetuning
+
+We have first carefully split the 600 annotated examples into five training, validation and test folds to minimize leakage between the training and evaluation sets.
+This is generally a crucial step in any supervised machine learning application, but it is particularly important in our application for several reasons.
+First, simple random sampling does not account for the facts that 
+(a) mentions are embedded in sentences so that the same mention can appear in multiple sentences and 
+(b) some mentions are near duplicates of each other and having these in different splits can lead to overestimation of predictive performance.
+Second, in the context of few-shot learning, it is particularly important to minimize leakage between the training and evaluation sets because the small number of training examples makes it more likely that a given example in the evaluation set is very similar to one in the training set, which can lead to overestimation of predictive performance.
+
+We have then used the training and validation split to examine the average performance of different base embedding models[^fn:embedding_model_selection] and input formatting strategies[^fn:inpiut_formatting_strategies] and select the best-performing model and formatting strategy for each classifier.
+
+Finally, we have trained the two classifiers on the full training set using the selected embedding model and input formatting strategy and evaluated their performance on the held-out test set.
+
+
+```{python}
+fp = annotations_path / 'group_mention_categorization' / 'final_annotations.tsv'
+annotations = pd.read_csv(fp, sep='\t')
+annotations.mention_id.nunique()
+```
+
+```{python}
+# annotations[annotations.mention.str.contains("lite")].pivot_table(index=['mention_id', 'mention'], columns='attribute_combination', values='label', aggfunc='first').T
+```
+
